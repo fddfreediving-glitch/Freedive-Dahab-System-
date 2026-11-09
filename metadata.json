@@ -1,0 +1,6 @@
+{
+  "name": "Freedive Dahab Operations & CRM ERP",
+  "description": "Secure, responsive ERP and CRM operations system for Freedive Dahab freediving school and center in Dahab, Egypt.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
