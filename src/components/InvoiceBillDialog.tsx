@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Pencil, Plus, Printer, Receipt, X } from 'lucide-react';
-import { Invoice, InvoiceUpdateInput, UserRole } from '../types';
+import { Invoice, InvoiceUpdateInput, Payment, UserRole } from '../types';
+import { BrandMark } from './BrandMark';
 
 interface InvoiceBillDialogProps {
   invoice: Invoice;
@@ -9,6 +10,7 @@ interface InvoiceBillDialogProps {
   onClose: () => void;
   onSave: (invoiceId: string, changes: InvoiceUpdateInput) => Promise<void>;
   onRecordPayment: (invoice: Invoice, requestId?: string) => void;
+  onAdjustPayment: (payment: Payment, invoice: Invoice) => void;
 }
 
 type InvoiceCategory = NonNullable<NonNullable<Invoice['items']>[number]['category']>;
@@ -74,6 +76,9 @@ function getInvoiceDraft(invoice: Invoice): InvoiceUpdateInput {
       description: item.description,
       quantity: item.quantity,
       unit_price: item.unit_price,
+      ...(item.category === 'accommodation'
+        ? { check_in_date: item.check_in_date || '', check_out_date: item.check_out_date || '' }
+        : {}),
     })),
   };
 }
@@ -113,6 +118,7 @@ export const InvoiceBillDialog: React.FC<InvoiceBillDialogProps> = ({
   onClose,
   onSave,
   onRecordPayment,
+  onAdjustPayment,
 }) => {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const canEdit = ['owner', 'finance'].includes(userRole) && invoice.status !== 'cancelled';
@@ -246,9 +252,7 @@ export const InvoiceBillDialog: React.FC<InvoiceBillDialogProps> = ({
           <article className="invoice-print-document mx-auto max-w-[880px] space-y-8 px-5 py-7 sm:px-10 sm:py-10">
             <header className="flex flex-col justify-between gap-6 border-b border-slate-200 pb-6 sm:flex-row sm:items-start">
               <div className="flex items-start gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-[#3069C4]/25 text-[#3069C4]" aria-hidden="true">
-                  <Receipt className="h-5 w-5" />
-                </div>
+                <BrandMark className="h-10 w-10 rounded-lg border border-slate-200" />
                 <div>
                   <p className="text-lg font-bold tracking-tight text-slate-950">Freedive Dahab</p>
                   <p className="mt-1 text-sm text-slate-600">Dahab, Egypt</p>
@@ -373,7 +377,18 @@ export const InvoiceBillDialog: React.FC<InvoiceBillDialogProps> = ({
                               <select
                                 id={`bill-category-${index}`}
                                 value={item.category}
-                                onChange={(event) => updateItem(index, { category: event.target.value as NonNullable<Invoice['items']>[number]['category'] })}
+                                onChange={(event) => {
+                                  const category = event.target.value as NonNullable<Invoice['items']>[number]['category'];
+                                  const checkInDate = new Date();
+                                  const checkOutDate = new Date();
+                                  checkOutDate.setDate(checkOutDate.getDate() + 1);
+                                  const formatLocalDate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+                                  updateItem(index, {
+                                    category,
+                                    check_in_date: category === 'accommodation' ? item.check_in_date || formatLocalDate(checkInDate) : undefined,
+                                    check_out_date: category === 'accommodation' ? item.check_out_date || formatLocalDate(checkOutDate) : undefined,
+                                  });
+                                }}
                                 className="min-h-10 rounded-md border border-slate-300 bg-white px-2 text-xs capitalize focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#3069C4]"
                               >
                                 {serviceCategories.map((category) => <option key={category} value={category}>{serviceCategoryLabels[category]}</option>)}
@@ -413,11 +428,55 @@ export const InvoiceBillDialog: React.FC<InvoiceBillDialogProps> = ({
                                   </div>
                                 );
                               })()}
+                              {item.category === 'accommodation' && (
+                                <div className="sm:col-span-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                  <div>
+                                    <label className="sr-only" htmlFor={`bill-check-in-${index}`}>Check-in date</label>
+                                    <input
+                                      id={`bill-check-in-${index}`}
+                                      required
+                                      type="date"
+                                      value={item.check_in_date || ''}
+                                      onChange={(event) => {
+                                        const nights = Math.round((Date.parse(`${item.check_out_date}T00:00:00.000Z`) - Date.parse(`${event.target.value}T00:00:00.000Z`)) / 86_400_000);
+                                        updateItem(index, {
+                                          check_in_date: event.target.value,
+                                          ...(Number.isFinite(nights) && nights > 0 ? { quantity: nights } : {}),
+                                        });
+                                      }}
+                                      className="min-h-10 w-full rounded-md border border-slate-300 px-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#3069C4]"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="sr-only" htmlFor={`bill-check-out-${index}`}>Check-out date</label>
+                                    <input
+                                      id={`bill-check-out-${index}`}
+                                      required
+                                      type="date"
+                                      min={item.check_in_date}
+                                      value={item.check_out_date || ''}
+                                      onChange={(event) => {
+                                        const nights = Math.round((Date.parse(`${event.target.value}T00:00:00.000Z`) - Date.parse(`${item.check_in_date}T00:00:00.000Z`)) / 86_400_000);
+                                        updateItem(index, {
+                                          check_out_date: event.target.value,
+                                          ...(Number.isFinite(nights) && nights > 0 ? { quantity: nights } : {}),
+                                        });
+                                      }}
+                                      className="min-h-10 w-full rounded-md border border-slate-300 px-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#3069C4]"
+                                    />
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           ) : (
                             <>
                               <p className="font-medium text-slate-900">{item.description}</p>
                               <p className="mt-1 text-xs capitalize text-slate-500">{item.category?.replace('_', ' ') || 'service'}</p>
+                              {item.category === 'accommodation' && item.check_in_date && item.check_out_date && (
+                                <p className="mt-1 text-xs text-slate-600">
+                                  Check-in {formatInvoiceDate(item.check_in_date)} · Check-out {formatInvoiceDate(item.check_out_date)}
+                                </p>
+                              )}
                             </>
                           )}
                         </td>
@@ -559,12 +618,14 @@ export const InvoiceBillDialog: React.FC<InvoiceBillDialogProps> = ({
                 </div>
                 {invoice.payments?.length ? (
                   <div className="mt-3 overflow-x-auto">
-                    <table className="w-full min-w-[420px] border-y border-slate-200 text-left text-sm">
+                    <table className="w-full min-w-[760px] border-y border-slate-200 text-left text-sm">
                       <thead className="border-b border-slate-200 text-xs font-semibold text-slate-500">
                         <tr>
                           <th scope="col" className="py-2 pr-3">Payment date</th>
-                          <th scope="col" className="py-2 px-3">Method / reference</th>
+                          <th scope="col" className="py-2 px-3">Payment details</th>
+                          <th scope="col" className="py-2 px-3">Recorded by</th>
                           <th scope="col" className="py-2 pl-3 text-right">Amount paid</th>
+                          <th scope="col" className="py-2 pl-3 text-right">Actions</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
@@ -572,15 +633,32 @@ export const InvoiceBillDialog: React.FC<InvoiceBillDialogProps> = ({
                           <tr key={payment.id}>
                             <td className="py-3 pr-3 text-slate-600">{formatInvoiceDate(payment.payment_date)}</td>
                             <td className="py-3 px-3 text-slate-600">
-                              <span>{payment.payment_method}</span>
+                              <span>{payment.payment_method}{payment.payment_account ? ` · ${payment.payment_account}` : ''}</span>
                               {(payment.notes || payment.reference_number) && (
                                 <span className="mt-1 block text-xs text-slate-500">
                                   {[payment.notes, payment.reference_number].filter(Boolean).join(' · ')}
                                 </span>
                               )}
+                              {payment.allocations?.map((allocation) => (
+                                <span key={allocation.id} className="mt-1 block text-xs text-slate-500">
+                                  {allocation.service_label} for {[allocation.beneficiary_first_name, allocation.beneficiary_last_name].filter(Boolean).join(' ') || 'customer'} · {currencyAmount(payment.currency, allocation.amount_cents / 100)}
+                                </span>
+                              ))}
+                              {payment.adjustments?.map((adjustment) => (
+                                <span key={adjustment.id} className="mt-1 block text-xs text-rose-700">
+                                  {adjustment.adjustment_date} · {adjustment.adjustment_type} ({adjustment.direction}) · {currencyAmount(payment.currency, adjustment.amount_cents / 100)} · {adjustment.reason} · {adjustment.recorded_by_name || 'Staff'}
+                                </span>
+                              ))}
                             </td>
+                            <td className="py-3 px-3 text-slate-600">{payment.recorded_by_name || '—'}</td>
                             <td className="py-3 pl-3 text-right font-medium tabular-nums text-slate-900">
                               {currencyAmount(payment.currency, payment.amount)}
+                              {typeof payment.net_amount === 'number' && payment.net_amount !== payment.amount && (
+                                <span className="mt-1 block text-xs text-slate-500">Net: {currencyAmount(payment.currency, payment.net_amount)}</span>
+                              )}
+                            </td>
+                            <td className="py-3 pl-3 text-right">
+                              {canEdit && !editing && <button type="button" onClick={() => onAdjustPayment(payment, invoice)} className="min-h-8 rounded-md border border-rose-300 px-2 text-xs font-semibold text-rose-800 hover:bg-rose-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#3069C4]">Refund / correct</button>}
                             </td>
                           </tr>
                         ))}

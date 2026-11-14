@@ -53,7 +53,15 @@ after(async () => {
   }
   db.close();
   process.chdir(originalDirectory);
-  rmSync(temporaryDirectory, { recursive: true, force: true });
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      rmSync(temporaryDirectory, { recursive: true, force: true });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EPERM' || attempt >= 4) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+    }
+  }
 });
 
 async function request(
@@ -93,7 +101,9 @@ test('front desk requests create invoices and deposit payments without finance-l
     initial_payment: {
       amount: 311,
       payment_method: 'Cash EUR',
+      payment_account: 'Cash EUR',
       payment_date: today,
+      allocations: [{ item_index: 0, beneficiary_student_id: student.id, amount: 311 }],
     },
   });
   assert.equal(invalidDeposit.status, 400);
@@ -112,7 +122,9 @@ test('front desk requests create invoices and deposit payments without finance-l
     initial_payment: {
       amount: 101,
       payment_method: 'Cash EUR',
+      payment_account: 'Cash EUR',
       payment_date: today,
+      allocations: [{ item_index: 0, beneficiary_student_id: student.id, amount: 101 }],
     },
   });
   assert.equal(belowMinimumDeposit.status, 400);
@@ -131,9 +143,11 @@ test('front desk requests create invoices and deposit payments without finance-l
     initial_payment: {
       amount: 114,
       payment_method: 'Cash EUR',
+      payment_account: 'Cash EUR',
       payment_date: today,
       reference_number: 'CASH-RECEIPT-1',
       notes: 'Deposit received',
+      allocations: [{ item_index: 0, beneficiary_student_id: student.id, amount: 114 }],
     },
   });
   assert.equal(created.status, 201);
@@ -151,9 +165,15 @@ test('front desk requests create invoices and deposit payments without finance-l
   const nextPayment = await request(`/customer-requests/${created.data.id}/payments`, frontDeskToken, {
     amount: 266,
     payment_method: 'Bank Transfer',
+    payment_account: 'Bank EUR',
     payment_date: today,
     reference_number: 'BANK-TRANSFER-2',
     notes: '',
+    allocations: [
+      { item_id: `item_${created.data.invoiceId}_0`, beneficiary_student_id: student.id, amount: 196 },
+      { item_id: `item_${created.data.invoiceId}_1`, beneficiary_student_id: student.id, amount: 40 },
+      { item_id: `item_${created.data.invoiceId}_2`, beneficiary_student_id: student.id, amount: 30 },
+    ],
   });
   assert.equal(nextPayment.status, 201);
   assert.equal(nextPayment.data.newPaidAmount, 380);
@@ -176,6 +196,79 @@ test('front desk requests create invoices and deposit payments without finance-l
     linkedInvoice.payments.map((payment: { amount: number }) => payment.amount).sort(),
     [114, 266],
   );
+});
+
+test('accommodation requests require valid stay dates and appear in the planner', async () => {
+  const noAuth = await request('/planner/accommodation-stays');
+  assert.equal(noAuth.status, 401);
+
+  const student = db.prepare('SELECT id FROM students ORDER BY id LIMIT 1').get() as { id: string };
+  const checkInDate = new Date();
+  checkInDate.setDate(checkInDate.getDate() + 10);
+  const checkOutDate = new Date(checkInDate);
+  checkOutDate.setDate(checkOutDate.getDate() + 2);
+  const toDateString = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  const checkIn = toDateString(checkInDate);
+  const checkOut = toDateString(checkOutDate);
+  const dueDate = toDateString(checkInDate);
+  const paymentDate = toDateString(new Date());
+
+  const missingDates = await request('/customer-requests', frontDeskToken, {
+    student_id: student.id,
+    currency: 'EUR',
+    due_date: dueDate,
+    special_request: '',
+    items: [{ category: 'accommodation', description: 'Lighthouse Room', quantity: 2, unit_price: 40 }],
+    initial_payment: {
+      amount: 24,
+      payment_method: 'Cash EUR',
+      payment_account: 'Cash EUR',
+      payment_date: paymentDate,
+      allocations: [{ item_index: 0, beneficiary_student_id: student.id, amount: 24 }],
+    },
+  });
+  assert.equal(missingDates.status, 400);
+  assert.match(missingDates.data.error, /check-in and check-out dates/);
+
+  const created = await request('/customer-requests', frontDeskToken, {
+    student_id: student.id,
+    currency: 'EUR',
+    due_date: dueDate,
+    special_request: '',
+    items: [{
+      category: 'accommodation',
+      description: 'Lighthouse Room',
+      quantity: 2,
+      unit_price: 40,
+      check_in_date: checkIn,
+      check_out_date: checkOut,
+    }],
+    initial_payment: {
+      amount: 24,
+      payment_method: 'Cash EUR',
+      payment_account: 'Cash EUR',
+      payment_date: paymentDate,
+      allocations: [{ item_index: 0, beneficiary_student_id: student.id, amount: 24 }],
+    },
+  });
+  assert.equal(created.status, 201);
+
+  const savedItem = db.prepare(`
+    SELECT check_in_date, check_out_date
+    FROM invoice_items
+    WHERE invoice_id = ? AND category = 'accommodation'
+  `).get(created.data.invoiceId) as { check_in_date: string; check_out_date: string };
+  assert.equal(savedItem.check_in_date, checkIn);
+  assert.equal(savedItem.check_out_date, checkOut);
+
+  const plannerStays = await request('/planner/accommodation-stays', financeToken);
+  assert.equal(plannerStays.status, 200);
+  assert.ok(plannerStays.data.some((stay: any) =>
+    stay.id === `item_${created.data.invoiceId}_0` &&
+    stay.check_in_date === checkIn &&
+    stay.check_out_date === checkOut &&
+    stay.student_id === student.id,
+  ));
 });
 
 test('gear rentals reserve stock with the customer bill and can be returned by checkout id', async () => {
@@ -204,7 +297,13 @@ test('gear rentals reserve stock with the customer bill and can be returned by c
       equipment_id: equipmentId,
       expected_return: returnDate,
     }],
-    initial_payment: { amount: 6, payment_method: 'Cash EUR', payment_date: today },
+    initial_payment: {
+      amount: 6,
+      payment_method: 'Cash EUR',
+      payment_account: 'Cash EUR',
+      payment_date: today,
+      allocations: [{ item_index: 0, beneficiary_student_id: student.id, amount: 6 }],
+    },
   });
   assert.equal(created.status, 201);
   assert.equal(created.data.rentalUnits, 1);
@@ -243,7 +342,13 @@ test('gear rentals reserve stock with the customer bill and can be returned by c
       equipment_id: equipmentId,
       expected_return: returnDate,
     }],
-    initial_payment: { amount: 12, payment_method: 'Cash EUR', payment_date: today },
+    initial_payment: {
+      amount: 12,
+      payment_method: 'Cash EUR',
+      payment_account: 'Cash EUR',
+      payment_date: today,
+      allocations: [{ item_index: 0, beneficiary_student_id: student.id, amount: 12 }],
+    },
   });
   assert.equal(oversubscribed.status, 409);
   assert.equal(

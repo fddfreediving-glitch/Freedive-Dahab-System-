@@ -3,13 +3,17 @@ import {
   CustomerRequest,
   CustomerRequestInput,
   Expense,
+  FinanceAccountBalance,
+  FinanceAccountMovement,
   Invoice,
   InvoiceUpdateInput,
+  Payment,
   PaymentInput,
   Student,
   UserRole,
 } from '../types';
 import { Language, translations } from '../i18n';
+import { apiRequest } from '../api';
 import {
   Receipt,
   DollarSign,
@@ -25,6 +29,7 @@ import {
   FileText,
 } from 'lucide-react';
 import { InvoiceBillDialog } from './InvoiceBillDialog';
+import { BrandMark } from './BrandMark';
 
 type RequestCategory = Exclude<CustomerRequestInput['items'][number]['category'], 'gear_rental'>;
 
@@ -39,6 +44,61 @@ interface RequestDraftItem {
   description: string;
   quantity: number;
   unit_price: number;
+  beneficiary_student_id: string;
+  deposit_allocation: number;
+  check_in_date?: string;
+  check_out_date?: string;
+}
+
+const localDateString = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const stayNights = (checkIn?: string, checkOut?: string) => {
+  if (!checkIn || !checkOut) return 0;
+  const nights = Math.round((Date.parse(`${checkOut}T00:00:00.000Z`) - Date.parse(`${checkIn}T00:00:00.000Z`)) / 86_400_000);
+  return Number.isFinite(nights) ? nights : 0;
+};
+
+interface PaymentAllocationDraft {
+  item_id: string;
+  beneficiary_student_id: string;
+  amount: number;
+}
+
+interface AdjustmentAllocationDraft {
+  payment_allocation_id?: string;
+  item_id?: string;
+  beneficiary_student_id?: string;
+  amount: number;
+}
+
+interface FinanceCategories {
+  expense: string[];
+  billing: string[];
+  income: string[];
+}
+
+interface FinanceHistoryRow {
+  id: string;
+  date: string;
+  type: string;
+  customerId?: string;
+  customer: string;
+  supplier: string;
+  invoice: string;
+  invoiceId?: string;
+  service: string;
+  category: string;
+  currency: string;
+  amount: number;
+  method: string;
+  account: string;
+  staff: string;
+  status: string;
 }
 
 const requestCatalog: Record<RequestCategory, RequestCatalogItem[]> = {
@@ -127,12 +187,59 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
   const canAccessCustomerRequests = canAccessFinance || userRole === 'front_desk_crm';
   const frontDeskOnly = userRole === 'front_desk_crm';
 
-  const [activeTab, setActiveTab] = useState<'requests' | 'income' | 'expenses' | 'invoices'>(
+  const [activeTab, setActiveTab] = useState<'requests' | 'income' | 'expenses' | 'invoices' | 'history' | 'movements'>(
     frontDeskOnly ? 'requests' : 'income',
   );
   const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
+  const [financeCategories, setFinanceCategories] = useState<FinanceCategories>({
+    expense: ['Taxi driving', 'Safe-cash-safe', 'Laundry', 'Room cleaning', 'Blue folder', 'Exchange', 'Internet/phone', 'Taxi shopping', 'DC maintenance/renewal', 'EQ maintenance/renewal', 'Water tank', 'Water bottles', 'Water card', 'Airport taxi', 'Electricity', 'Desert dinner excursion', 'Ras Mohammed excursion', 'Cleaning supplies', 'Stationery', 'Salary', 'SSI kits', 'Company documents/legal fees', 'Other'],
+    billing: ['Bill customer', 'course', 'package', 'accommodation', 'activity', 'workshop', 'training', 'gear_rental', 'shop', 'other'],
+    income: ['FDD Income Receipt'],
+  });
+  const [categoryDraft, setCategoryDraft] = useState('');
+  const [accountMovements, setAccountMovements] = useState<FinanceAccountMovement[]>([]);
+  const [accountBalances, setAccountBalances] = useState<FinanceAccountBalance[]>([]);
+  const [openingBalanceDraft, setOpeningBalanceDraft] = useState<Array<{ account: string; currency: string; amount: number }>>([]);
+  const [historyFilters, setHistoryFilters] = useState({
+    from_date: '',
+    to_date: '',
+    search: '',
+    customer_id: '',
+    service: '',
+    currency: '',
+    method: '',
+    account: '',
+    staff: '',
+    status: '',
+    category: '',
+    supplier: '',
+  });
+  const [categoryType, setCategoryType] = useState<'expense' | 'billing' | 'income'>('expense');
+  const [adjustmentTarget, setAdjustmentTarget] = useState<{ payment: Payment; invoice: Invoice } | null>(null);
+  const [adjustmentData, setAdjustmentData] = useState({
+    adjustment_type: 'refund',
+    direction: 'debit',
+    adjustment_date: new Date().toISOString().slice(0, 10),
+    payment_method: 'Cash EUR',
+    payment_account: 'Cash EUR',
+    reason: '',
+    reference_number: '',
+  });
+  const [adjustmentAllocations, setAdjustmentAllocations] = useState<AdjustmentAllocationDraft[]>([]);
+  const [movementForm, setMovementForm] = useState({
+    movement_type: 'transfer',
+    from_account: '',
+    from_currency: 'EUR',
+    from_amount: 0,
+    to_account: '',
+    to_currency: 'EUR',
+    to_amount: 0,
+    movement_date: new Date().toISOString().slice(0, 10),
+    reference_number: '',
+    notes: '',
+  });
 
   // Modals
   const [isInvoiceModalOpen, setIsInvoiceModalOpen] = useState(false);
@@ -145,6 +252,8 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
   const requestButtonRef = useRef<HTMLButtonElement>(null);
   const paymentDialogRef = useRef<HTMLDivElement>(null);
   const paymentReturnFocusRef = useRef<HTMLElement | null>(null);
+  const adjustmentDialogRef = useRef<HTMLDialogElement>(null);
+  const adjustmentReturnFocusRef = useRef<HTMLElement | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -159,6 +268,8 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
       description: 'AIDA 2 Freediver Course Tuition',
       quantity: 1,
       unit_price: 320,
+      check_in_date: '',
+      check_out_date: '',
     }],
     due_date: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
     notes: 'Payment required prior to ocean day 1.',
@@ -168,11 +279,14 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
   const [paymentData, setPaymentData] = useState({
     amount: 0,
     currency: 'EUR',
+    customer_id: '',
     payment_method: 'Cash EUR',
+    payment_account: 'Cash EUR',
     payment_date: new Date().toISOString().slice(0, 10),
     reference_number: '',
     notes: '',
   });
+  const [paymentAllocations, setPaymentAllocations] = useState<PaymentAllocationDraft[]>([]);
 
   const [newCustomerRequest, setNewCustomerRequest] = useState({
     student_id: students[0]?.id || '',
@@ -182,21 +296,24 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
     initial_payment: {
       amount: 0,
       payment_method: 'Cash EUR',
+      payment_account: 'Cash EUR',
       payment_date: new Date().toISOString().slice(0, 10),
       reference_number: '',
       notes: '',
     },
   });
   const [requestItems, setRequestItems] = useState<RequestDraftItem[]>([
-    { category: 'course', description: 'SSI Freediver', quantity: 1, unit_price: 310 },
+    { category: 'course', description: 'SSI Freediver', quantity: 1, unit_price: 310, beneficiary_student_id: '', deposit_allocation: 0 },
   ]);
 
   // New expense state
   const [newExpense, setNewExpense] = useState({
-    category: 'Oxygen & Safety Gas',
+    category: 'Taxi driving',
     vendor_name: 'Dahab Medical Gases',
     amount: 3200,
     currency: 'EGP',
+    payment_method: 'Cash EGP',
+    payment_account: 'Cash EGP',
     expense_date: new Date().toISOString().slice(0, 10),
     description: 'Medical oxygen cylinders refill for emergency kits',
     receipt_ref: 'REC-' + Math.floor(1000 + Math.random() * 9000),
@@ -211,6 +328,30 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
       setNewCustomerRequest((current) => ({ ...current, student_id: students[0].id }));
     }
   }, [newCustomerRequest.student_id, students]);
+
+  useEffect(() => {
+    if (!canAccessFinance) return;
+    Promise.all([
+      apiRequest<FinanceCategories>('/api/finance/categories'),
+      apiRequest<FinanceAccountMovement[]>('/api/finance/account-movements'),
+      apiRequest<FinanceAccountBalance[]>('/api/finance/account-balances'),
+    ]).then(([categories, movements, balances]) => {
+      setFinanceCategories(categories);
+      setAccountMovements(movements);
+      setAccountBalances(balances);
+      setOpeningBalanceDraft(balances.map(({ account, currency, opening_balance }) => ({
+        account, currency, amount: opening_balance,
+      })));
+    }).catch((error: unknown) => {
+      setFormError(error instanceof Error ? error.message : 'Finance settings could not be loaded');
+    });
+  }, [canAccessFinance]);
+
+  useEffect(() => {
+    if (financeCategories.expense.length && !financeCategories.expense.includes(newExpense.category)) {
+      setNewExpense((current) => ({ ...current, category: financeCategories.expense[0] }));
+    }
+  }, [financeCategories.expense, newExpense.category]);
 
   useEffect(() => {
     if (!isRequestModalOpen) return;
@@ -280,6 +421,45 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
     };
   }, [activeTab, selectedInvoiceForPayment]);
 
+  useEffect(() => {
+    if (!adjustmentTarget) return;
+    const dialog = adjustmentDialogRef.current;
+    if (!dialog) return;
+    if (!dialog.open) dialog.showModal();
+    const getFocusable = () => dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])',
+    );
+    getFocusable()[0]?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setAdjustmentTarget(null);
+      } else if (event.key === 'Tab') {
+        const focusable = getFocusable();
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    dialog.addEventListener('keydown', handleKeyDown);
+    return () => {
+      dialog.removeEventListener('keydown', handleKeyDown);
+      if (dialog.open) dialog.close();
+      const returnTarget = adjustmentReturnFocusRef.current;
+      adjustmentReturnFocusRef.current = null;
+      window.requestAnimationFrame(() => {
+        if (returnTarget?.isConnected) returnTarget.focus();
+      });
+    };
+  }, [adjustmentTarget]);
+
   if (!canAccessCustomerRequests) {
     return (
       <div className="p-8 rounded-2xl bg-[#091728] border border-cyan-900/50 text-center max-w-xl mx-auto space-y-4 shadow-xl">
@@ -327,12 +507,144 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
     return matchesSearch && matchesStatus;
   });
 
+  const financeHistoryRows: FinanceHistoryRow[] = [
+    ...invoices.flatMap((invoice) => {
+      const customer = `${invoice.first_name || ''} ${invoice.last_name || ''}`.trim();
+      const charges: FinanceHistoryRow[] = (invoice.items || []).map((item) => ({
+        id: `charge:${invoice.id}:${item.id}`,
+        date: invoice.issue_date,
+        type: 'Customer charge',
+        customerId: invoice.student_id,
+        customer,
+        supplier: '',
+        invoice: invoice.invoice_number,
+        invoiceId: invoice.id,
+        service: item.description,
+        category: item.category || 'other',
+        currency: invoice.currency,
+        amount: Math.round(item.total_price * 100) / 100,
+        method: '',
+        account: '',
+        staff: '',
+        status: invoice.status,
+      }));
+      const payments: FinanceHistoryRow[] = (invoice.payments || []).flatMap((payment) => {
+        const allocations = payment.allocations?.length ? payment.allocations : [undefined];
+        return allocations.map((allocation, index) => ({
+          id: `payment:${payment.id}:${allocation?.id || index}`,
+          date: payment.payment_date,
+          type: 'Customer payment',
+          customerId: invoice.student_id,
+          customer,
+          supplier: '',
+          invoice: invoice.invoice_number,
+          invoiceId: invoice.id,
+          service: allocation?.service_label || invoice.invoice_number,
+          category: allocation?.service_category || 'payment',
+          currency: payment.currency,
+          amount: -((allocation?.amount_cents ?? Math.round(payment.amount * 100)) / 100),
+          method: payment.payment_method,
+          account: payment.payment_account || '',
+          staff: payment.recorded_by_name || '',
+          status: 'posted',
+        }));
+      });
+      const adjustments: FinanceHistoryRow[] = (invoice.payments || []).flatMap((payment) =>
+        (payment.adjustments || []).flatMap((adjustment) => {
+          const allocations = adjustment.allocations?.length ? adjustment.allocations : [undefined];
+          return allocations.map((allocation, index) => ({
+            id: `adjustment:${adjustment.id}:${index}`,
+            date: adjustment.adjustment_date,
+            type: `${adjustment.adjustment_type} · ${adjustment.direction}`,
+            customerId: invoice.student_id,
+            customer,
+            supplier: '',
+            invoice: invoice.invoice_number,
+            invoiceId: invoice.id,
+            service: allocation?.service_label || invoice.invoice_number,
+            category: allocation?.service_category || 'adjustment',
+            currency: payment.currency,
+            amount: (adjustment.direction === 'debit' ? 1 : -1) * (allocation?.amount_cents ?? adjustment.amount_cents) / 100,
+            method: adjustment.payment_method,
+            account: adjustment.payment_account,
+            staff: adjustment.recorded_by_name || '',
+            status: adjustment.reason,
+          }));
+        }),
+      );
+      return [...charges, ...payments, ...adjustments];
+    }),
+    ...expenses.map((expense): FinanceHistoryRow => ({
+      id: `expense:${expense.id}`,
+      date: expense.expense_date,
+      type: 'Supplier expense',
+      customer: '',
+      supplier: expense.vendor_name,
+      invoice: expense.expense_number,
+      service: expense.description,
+      category: expense.category,
+      currency: expense.currency,
+      amount: -expense.amount,
+      method: expense.payment_method || '',
+      account: expense.payment_account || '',
+      staff: expense.created_by_name || '',
+      status: expense.status,
+    })),
+    ...accountMovements.map((movement): FinanceHistoryRow => ({
+      id: `movement:${movement.id}`,
+      date: movement.movement_date,
+      type: movement.movement_type === 'transfer' ? 'Account transfer' : 'Currency exchange',
+      customer: '',
+      supplier: '',
+      invoice: movement.reference_number || movement.id,
+      service: `${movement.from_currency} ${movement.from_amount_cents / 100} ${movement.from_account} → ${movement.to_currency} ${movement.to_amount_cents / 100} ${movement.to_account}`,
+      category: movement.movement_type,
+      currency: movement.from_currency,
+      amount: -(movement.from_amount_cents / 100),
+      method: movement.movement_type,
+      account: movement.from_account,
+      staff: movement.recorded_by_name || '',
+      status: 'balance only · excluded from income/expenses',
+    })),
+  ];
+
+  const filteredHistoryRows = financeHistoryRows
+    .filter((row) => (!historyFilters.from_date || row.date >= historyFilters.from_date))
+    .filter((row) => (!historyFilters.to_date || row.date <= historyFilters.to_date))
+    .filter((row) => (!historyFilters.customer_id || row.customerId === historyFilters.customer_id))
+    .filter((row) => (!historyFilters.currency || row.currency === historyFilters.currency))
+    .filter((row) => (!historyFilters.method || row.method.toLowerCase().includes(historyFilters.method.toLowerCase())))
+    .filter((row) => (!historyFilters.account || row.account.toLowerCase().includes(historyFilters.account.toLowerCase())))
+    .filter((row) => (!historyFilters.staff || row.staff.toLowerCase().includes(historyFilters.staff.toLowerCase())))
+    .filter((row) => (!historyFilters.status || row.status.toLowerCase().includes(historyFilters.status.toLowerCase())))
+    .filter((row) => (!historyFilters.category || row.category.toLowerCase().includes(historyFilters.category.toLowerCase())))
+    .filter((row) => (!historyFilters.service || row.service.toLowerCase().includes(historyFilters.service.toLowerCase())))
+    .filter((row) => (!historyFilters.supplier || row.supplier.toLowerCase().includes(historyFilters.supplier.toLowerCase())))
+    .filter((row) => {
+      const query = historyFilters.search.trim().toLowerCase();
+      return !query || [
+        row.customer, row.supplier, row.invoice, row.service, row.category, row.type, row.method, row.account, row.staff,
+      ].some((value) => value.toLowerCase().includes(query));
+    })
+    .sort((left, right) => right.date.localeCompare(left.date));
+
   const handleInvoiceSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
+    if (newInvoice.items.some((item) => item.category === 'accommodation' && stayNights(item.check_in_date, item.check_out_date) <= 0)) {
+      setFormError('Enter valid accommodation check-in and check-out dates, with check-out after check-in.');
+      return;
+    }
     setSubmitting(true);
     try {
-      await onCreateInvoice(newInvoice);
+      await onCreateInvoice({
+        ...newInvoice,
+        items: newInvoice.items.map(({ check_in_date, check_out_date, ...item }) => (
+          item.category === 'accommodation'
+            ? { ...item, check_in_date, check_out_date }
+            : item
+        )),
+      });
       setIsInvoiceModalOpen(false);
       await onRefresh();
     } catch (err: any) {
@@ -342,20 +654,155 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
     }
   };
 
+  const refreshFinanceSettings = async () => {
+    const [categories, movements, balances] = await Promise.all([
+      apiRequest<FinanceCategories>('/api/finance/categories'),
+      apiRequest<FinanceAccountMovement[]>('/api/finance/account-movements'),
+      apiRequest<FinanceAccountBalance[]>('/api/finance/account-balances'),
+    ]);
+    setFinanceCategories(categories);
+    setAccountMovements(movements);
+    setAccountBalances(balances);
+    setOpeningBalanceDraft(balances.map(({ account, currency, opening_balance }) => ({
+      account, currency, amount: opening_balance,
+    })));
+  };
+
+  const handleSaveCategories = async () => {
+    setFormError(null);
+    setSubmitting(true);
+    try {
+      const saved = await apiRequest<FinanceCategories>('/api/finance/categories', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(financeCategories),
+      });
+      setFinanceCategories(saved);
+      setCategoryDraft('');
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : 'Finance categories could not be saved');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleSaveOpeningBalances = async () => {
+    setFormError(null);
+    setSubmitting(true);
+    try {
+      await apiRequest('/api/finance/account-balances/opening', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ opening_balances: openingBalanceDraft }),
+      });
+      await refreshFinanceSettings();
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : 'Opening balances could not be saved');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleMovementSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setFormError(null);
+    setSubmitting(true);
+    try {
+      await apiRequest('/api/finance/account-movements', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(movementForm),
+      });
+      setMovementForm((current) => ({ ...current, from_amount: 0, to_amount: 0, reference_number: '', notes: '' }));
+      await refreshFinanceSettings();
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : 'Account movement could not be recorded');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const openAdjustmentForm = (payment: Payment, invoice: Invoice) => {
+    adjustmentReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setFormError(null);
+    setAdjustmentTarget({ payment, invoice });
+    const cashMethod = `Cash ${invoice.currency}`;
+    setAdjustmentData({
+      adjustment_type: 'refund',
+      direction: 'debit',
+      adjustment_date: new Date().toISOString().slice(0, 10),
+      payment_method: cashMethod,
+      payment_account: payment.payment_account || cashMethod,
+      reason: '',
+      reference_number: '',
+    });
+    const originalAllocations = payment.allocations || [];
+    setAdjustmentAllocations(originalAllocations.length ? originalAllocations.map((allocation) => {
+      const alreadyDebited = (payment.adjustments || [])
+        .filter((adjustment) => adjustment.direction === 'debit')
+        .flatMap((adjustment) => adjustment.allocations || [])
+        .filter((adjustmentAllocation) => adjustmentAllocation.payment_allocation_id === allocation.id)
+        .reduce((sum, adjustmentAllocation) => sum + adjustmentAllocation.amount_cents, 0);
+      return {
+        payment_allocation_id: allocation.id,
+        amount: Math.max(0, allocation.amount_cents - alreadyDebited) / 100,
+      };
+    }) : [{
+      item_id: invoice.items?.[0]?.id || '',
+      beneficiary_student_id: invoice.student_id,
+      amount: Math.max(0, payment.amount - (payment.adjustments || [])
+        .filter((adjustment) => adjustment.direction === 'debit')
+        .reduce((sum, adjustment) => sum + adjustment.amount_cents / 100, 0)),
+    }]);
+  };
+
+  const handleAdjustmentSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!adjustmentTarget) return;
+    const allocations = adjustmentAllocations.filter((allocation) => allocation.amount > 0);
+    const amountCents = allocations.reduce((sum, allocation) => sum + Math.round(allocation.amount * 100), 0);
+    if (amountCents <= 0) {
+      setFormError('Allocate the adjustment to at least one original payment service.');
+      return;
+    }
+    setFormError(null);
+    setSubmitting(true);
+    try {
+      await apiRequest(`/api/finance/payments/${adjustmentTarget.payment.id}/adjustments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...adjustmentData, amount: amountCents / 100, allocations }),
+      });
+      setAdjustmentTarget(null);
+      await onRefresh();
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : 'Payment adjustment could not be recorded');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handlePaymentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedInvoiceForPayment) return;
     setFormError(null);
+    const allocatedCents = paymentAllocations.reduce((sum, allocation) => sum + Math.round(allocation.amount * 100), 0);
+    if (allocatedCents !== Math.round(paymentData.amount * 100)) {
+      setFormError('Allocate the full payment across the invoice services before saving.');
+      return;
+    }
     setSubmitting(true);
     try {
+      const payment = { ...paymentData, allocations: paymentAllocations.filter((allocation) => allocation.amount > 0) };
       if (paymentRequestId) {
-        await onRecordCustomerRequestPayment(paymentRequestId, paymentData);
+        await onRecordCustomerRequestPayment(paymentRequestId, payment);
       } else {
-        await onRecordPayment(selectedInvoiceForPayment.id, paymentData);
+        await onRecordPayment(selectedInvoiceForPayment.id, payment);
       }
       setSelectedInvoiceForPayment(null);
       setPaymentRequestId(null);
       await onRefresh();
+      await refreshFinanceSettings();
     } catch (err: any) {
       setFormError(err.message || 'Failed to record payment');
     } finally {
@@ -365,6 +812,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
 
   const requestTotal = requestItems.reduce((total, item) => total + item.quantity * item.unit_price, 0);
   const minimumRequestDeposit = Math.ceil(requestTotal * 0.3 * 100) / 100;
+  const allocatedRequestDeposit = requestItems.reduce((total, item) => total + Math.round(item.deposit_allocation * 100), 0) / 100;
 
   const handleCustomerRequestSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -373,8 +821,16 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
       setFormError('Choose a customer and enter a confirmed price for every request item.');
       return;
     }
+    if (requestItems.some((item) => item.category === 'accommodation' && stayNights(item.check_in_date, item.check_out_date) <= 0)) {
+      setFormError('Enter valid accommodation check-in and check-out dates, with check-out after check-in.');
+      return;
+    }
     if (newCustomerRequest.initial_payment.amount < minimumRequestDeposit || newCustomerRequest.initial_payment.amount > requestTotal) {
       setFormError(`The deposit must be at least 30% (${newCustomerRequest.currency} ${minimumRequestDeposit}) and no more than the total bill.`);
+      return;
+    }
+    if (Math.round(allocatedRequestDeposit * 100) !== Math.round(newCustomerRequest.initial_payment.amount * 100)) {
+      setFormError('Allocate the full deposit across the listed services before saving.');
       return;
     }
 
@@ -382,7 +838,15 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
     try {
       await onCreateCustomerRequest({
         ...newCustomerRequest,
-        items: requestItems,
+        items: requestItems.map(({ deposit_allocation: _deposit, ...item }) => item),
+        initial_payment: {
+          ...newCustomerRequest.initial_payment,
+          allocations: requestItems.map((item, item_index) => ({
+            item_index,
+            beneficiary_student_id: item.beneficiary_student_id || newCustomerRequest.student_id,
+            amount: item.deposit_allocation,
+          })).filter((allocation) => allocation.amount > 0),
+        },
       });
       setIsRequestModalOpen(false);
       requestButtonRef.current?.focus();
@@ -391,8 +855,9 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
         special_request: '',
         initial_payment: { ...current.initial_payment, amount: 0, reference_number: '', notes: '' },
       }));
-      setRequestItems([{ category: 'course', description: 'SSI Freediver', quantity: 1, unit_price: 310 }]);
+      setRequestItems([{ category: 'course', description: 'SSI Freediver', quantity: 1, unit_price: 310, beneficiary_student_id: '', deposit_allocation: 0 }]);
       await onRefresh();
+      await refreshFinanceSettings();
     } catch (err: any) {
       setFormError(err.message || 'Failed to record customer request');
     } finally {
@@ -408,6 +873,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
       await onCreateExpense(newExpense);
       setIsExpenseModalOpen(false);
       await onRefresh();
+      await refreshFinanceSettings();
     } catch (err: any) {
       setFormError(err.message || 'Failed to record expense');
     } finally {
@@ -420,15 +886,54 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
     setSelectedInvoiceForPayment(inv);
     setPaymentRequestId(requestId || null);
     const balance = inv.total_amount - inv.paid_amount;
-    const cashMethod = inv.currency === 'EGP' ? 'Cash EGP' : inv.currency === 'USD' ? 'Cash USD' : 'Cash EUR';
+    const cashMethod = `Cash ${inv.currency}`;
     setPaymentData({
       amount: balance,
       currency: inv.currency,
+      customer_id: inv.student_id,
       payment_method: cashMethod,
+      payment_account: cashMethod,
       payment_date: new Date().toISOString().slice(0, 10),
       reference_number: '',
       notes: `Payment for ${inv.items?.map((item) => item.description).join(', ') || inv.invoice_number}`,
     });
+    const items = inv.items || [];
+    const usedByItem = new Map<string, number>();
+    for (const payment of inv.payments || []) {
+      for (const allocation of payment.allocations || []) {
+        if (allocation.invoice_item_id) {
+          usedByItem.set(
+            allocation.invoice_item_id,
+            (usedByItem.get(allocation.invoice_item_id) || 0) + allocation.amount_cents,
+          );
+        }
+      }
+      for (const adjustment of payment.adjustments || []) {
+        for (const allocation of adjustment.allocations || []) {
+          if (allocation.invoice_item_id) {
+            const sign = adjustment.direction === 'debit' ? -1 : 1;
+            usedByItem.set(
+              allocation.invoice_item_id,
+              (usedByItem.get(allocation.invoice_item_id) || 0) + sign * allocation.amount_cents,
+            );
+          }
+        }
+      }
+    }
+    let remainingCents = Math.round(balance * 100);
+    setPaymentAllocations(items.map((item) => {
+      const availableCents = Math.max(
+        0,
+        Math.round((item.total_price ?? item.quantity * item.unit_price) * 100) - (usedByItem.get(item.id || '') || 0),
+      );
+      const amountCents = Math.min(remainingCents, availableCents);
+      remainingCents -= amountCents;
+      return {
+        item_id: item.id || '',
+        beneficiary_student_id: inv.student_id,
+        amount: amountCents / 100,
+      };
+    }));
   };
 
   const closePaymentModal = () => {
@@ -462,10 +967,17 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
 
   const changeRequestItemCategory = (index: number, category: RequestCategory) => {
     const catalogItem = requestCatalog[category][0];
+    const checkInDate = localDateString(new Date());
+    const checkOut = new Date();
+    checkOut.setDate(checkOut.getDate() + 1);
     updateRequestItem(index, {
       category,
       description: catalogItem.description,
       unit_price: newCustomerRequest.currency === 'EUR' ? catalogItem.price : 0,
+      deposit_allocation: 0,
+      ...(category === 'accommodation'
+        ? { check_in_date: checkInDate, check_out_date: localDateString(checkOut), quantity: 1 }
+        : { check_in_date: undefined, check_out_date: undefined }),
     });
   };
 
@@ -475,15 +987,20 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
     updateRequestItem(index, {
       description,
       unit_price: newCustomerRequest.currency === 'EUR' ? catalogItem?.price || 0 : 0,
+      deposit_allocation: 0,
     });
   };
 
   const changeRequestCurrency = (currency: string) => {
-    const cashMethod = currency === 'EGP' ? 'Cash EGP' : currency === 'USD' ? 'Cash USD' : 'Cash EUR';
+    const cashMethod = `Cash ${currency}`;
     setNewCustomerRequest((current) => ({
       ...current,
       currency,
-      initial_payment: { ...current.initial_payment, payment_method: cashMethod },
+      initial_payment: {
+        ...current.initial_payment,
+        payment_method: cashMethod,
+        payment_account: cashMethod,
+      },
     }));
     setRequestItems((current) => current.map((item) => {
       const catalogItem = requestCatalog[item.category].find((entry) => entry.description === item.description);
@@ -497,7 +1014,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-slate-200 dark:border-slate-800">
         <div>
           <h2 className="text-xl font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
-            <Receipt className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+            <BrandMark className="h-9 w-9 rounded-lg" />
             <span>{frontDeskOnly ? 'Customer Requests' : 'Finance & Billing Ledger'}</span>
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
@@ -637,6 +1154,36 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
           }`}
         >
           Customer Invoices ({invoices.length})
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="finance-history-tab"
+          aria-selected={activeTab === 'history'}
+          aria-controls="finance-history-panel"
+          onClick={() => setActiveTab('history')}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            activeTab === 'history'
+              ? 'bg-[#4C8BF5] text-white shadow-xs'
+              : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:text-[#4C8BF5] border border-[#E8EEF7] dark:border-slate-700'
+          }`}
+        >
+          Customer History & Reports
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="finance-movements-tab"
+          aria-selected={activeTab === 'movements'}
+          aria-controls="finance-movements-panel"
+          onClick={() => setActiveTab('movements')}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            activeTab === 'movements'
+              ? 'bg-[#4C8BF5] text-white shadow-xs'
+              : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:text-[#4C8BF5] border border-[#E8EEF7] dark:border-slate-700'
+          }`}
+        >
+          Accounts & Categories
         </button>
         </>}
       </div>
@@ -1038,6 +1585,213 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
         </section>
       )}
 
+      {canAccessFinance && activeTab === 'history' && (
+        <section id="finance-history-panel" role="tabpanel" aria-labelledby="finance-history-tab" className="space-y-4">
+          <div>
+            <h3 className="text-lg font-bold text-slate-900 dark:text-white">Customer history & transaction report</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Charges increase the balance; payments and credits reduce it. Refunds, expenses, and balance-only transfers remain visible as separate audit entries.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 gap-3 rounded-xl border border-cyan-900/40 bg-[#0a182a] p-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div>
+              <label htmlFor="history-search" className="mb-1 block text-[11px] font-semibold text-slate-300">Search</label>
+              <input id="history-search" value={historyFilters.search} onChange={(event) => setHistoryFilters({ ...historyFilters, search: event.target.value })} placeholder="Invoice, customer, service, reference..." className="min-h-10 w-full rounded-lg border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white" />
+            </div>
+            <div>
+              <label htmlFor="history-customer" className="mb-1 block text-[11px] font-semibold text-slate-300">Customer</label>
+              <select id="history-customer" value={historyFilters.customer_id} onChange={(event) => setHistoryFilters({ ...historyFilters, customer_id: event.target.value })} className="min-h-10 w-full rounded-lg border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white">
+                <option value="">All customers</option>
+                {students.map((student) => <option key={student.id} value={student.id}>{student.first_name} {student.last_name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="history-from" className="mb-1 block text-[11px] font-semibold text-slate-300">From date</label>
+              <input id="history-from" type="date" value={historyFilters.from_date} onChange={(event) => setHistoryFilters({ ...historyFilters, from_date: event.target.value })} className="min-h-10 w-full rounded-lg border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white" />
+            </div>
+            <div>
+              <label htmlFor="history-to" className="mb-1 block text-[11px] font-semibold text-slate-300">To date</label>
+              <input id="history-to" type="date" value={historyFilters.to_date} onChange={(event) => setHistoryFilters({ ...historyFilters, to_date: event.target.value })} className="min-h-10 w-full rounded-lg border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white" />
+            </div>
+            <div>
+              <label htmlFor="history-service" className="mb-1 block text-[11px] font-semibold text-slate-300">Service</label>
+              <input id="history-service" value={historyFilters.service} onChange={(event) => setHistoryFilters({ ...historyFilters, service: event.target.value })} className="min-h-10 w-full rounded-lg border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white" />
+            </div>
+            <div>
+              <label htmlFor="history-category" className="mb-1 block text-[11px] font-semibold text-slate-300">Category / type</label>
+              <input id="history-category" value={historyFilters.category} onChange={(event) => setHistoryFilters({ ...historyFilters, category: event.target.value })} className="min-h-10 w-full rounded-lg border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white" />
+            </div>
+            <div>
+              <label htmlFor="history-currency" className="mb-1 block text-[11px] font-semibold text-slate-300">Currency</label>
+              <select id="history-currency" value={historyFilters.currency} onChange={(event) => setHistoryFilters({ ...historyFilters, currency: event.target.value })} className="min-h-10 w-full rounded-lg border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white">
+                <option value="">All currencies</option><option value="EUR">EUR</option><option value="USD">USD</option><option value="EGP">EGP</option><option value="GBP">GBP</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor="history-method" className="mb-1 block text-[11px] font-semibold text-slate-300">Payment method</label>
+              <input id="history-method" value={historyFilters.method} onChange={(event) => setHistoryFilters({ ...historyFilters, method: event.target.value })} className="min-h-10 w-full rounded-lg border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white" />
+            </div>
+            <div>
+              <label htmlFor="history-account" className="mb-1 block text-[11px] font-semibold text-slate-300">Payment account</label>
+              <input id="history-account" value={historyFilters.account} onChange={(event) => setHistoryFilters({ ...historyFilters, account: event.target.value })} className="min-h-10 w-full rounded-lg border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white" />
+            </div>
+            <div>
+              <label htmlFor="history-staff" className="mb-1 block text-[11px] font-semibold text-slate-300">Staff member</label>
+              <input id="history-staff" value={historyFilters.staff} onChange={(event) => setHistoryFilters({ ...historyFilters, staff: event.target.value })} className="min-h-10 w-full rounded-lg border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white" />
+            </div>
+            <div>
+              <label htmlFor="history-supplier" className="mb-1 block text-[11px] font-semibold text-slate-300">Supplier</label>
+              <input id="history-supplier" value={historyFilters.supplier} onChange={(event) => setHistoryFilters({ ...historyFilters, supplier: event.target.value })} className="min-h-10 w-full rounded-lg border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white" />
+            </div>
+            <div>
+              <label htmlFor="history-status" className="mb-1 block text-[11px] font-semibold text-slate-300">Status / reason</label>
+              <input id="history-status" value={historyFilters.status} onChange={(event) => setHistoryFilters({ ...historyFilters, status: event.target.value })} className="min-h-10 w-full rounded-lg border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white" />
+            </div>
+          </div>
+          <div className="overflow-hidden rounded-xl border border-cyan-900/40 bg-[#0a182a]">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[1450px] text-left text-xs text-slate-300">
+                <thead className="border-b border-cyan-900/50 bg-[#071424] text-[10px] uppercase tracking-wider text-cyan-300">
+                  <tr>{['Date', 'Transaction', 'Customer', 'Supplier', 'Invoice / Ref', 'Service / notes', 'Category', 'Amount', 'Method', 'Account', 'Staff', 'Status / reason'].map((label) => <th key={label} scope="col" className="px-3 py-3">{label}</th>)}</tr>
+                </thead>
+                <tbody className="divide-y divide-cyan-900/30">
+                  {filteredHistoryRows.map((row) => (
+                    <tr key={row.id} className="align-top hover:bg-[#0e213b]/60">
+                      <td className="whitespace-nowrap px-3 py-3 text-slate-400">{row.date}</td>
+                      <td className="px-3 py-3 font-semibold text-white">{row.type}</td>
+                      <td className="px-3 py-3">{row.customer || '—'}</td>
+                      <td className="px-3 py-3">{row.supplier || '—'}</td>
+                      <td className="px-3 py-3 font-mono">
+                        {row.invoiceId ? (
+                          <button type="button" onClick={() => {
+                            const invoice = invoices.find((candidate) => candidate.id === row.invoiceId);
+                            if (invoice) openBill(invoice);
+                          }} className="min-h-8 rounded px-1 text-cyan-300 underline decoration-dotted underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300">{row.invoice}</button>
+                        ) : row.invoice}
+                      </td>
+                      <td className="max-w-xs whitespace-pre-wrap px-3 py-3">{row.service}</td>
+                      <td className="px-3 py-3 capitalize">{row.category.replace('_', ' ')}</td>
+                      <td className={`whitespace-nowrap px-3 py-3 text-right font-mono font-bold ${row.amount < 0 ? 'text-emerald-300' : row.type === 'Supplier expense' ? 'text-rose-300' : 'text-white'}`}>
+                        {row.amount < 0 ? '−' : ''}{row.currency} {Math.abs(row.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="px-3 py-3">{row.method || '—'}</td>
+                      <td className="px-3 py-3">{row.account || '—'}</td>
+                      <td className="px-3 py-3">{row.staff || '—'}</td>
+                      <td className="max-w-xs whitespace-pre-wrap px-3 py-3">{row.status}</td>
+                    </tr>
+                  ))}
+                  {filteredHistoryRows.length === 0 && <tr><td colSpan={12} className="py-10 text-center text-slate-500">No transactions match these filters.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {canAccessFinance && activeTab === 'movements' && (
+        <section id="finance-movements-panel" role="tabpanel" aria-labelledby="finance-movements-tab" className="space-y-5">
+          {formError && <div role="alert" className="rounded-lg border border-rose-800 bg-rose-950/70 p-3 text-xs text-rose-200">{formError}</div>}
+          <div className="grid gap-5 xl:grid-cols-2">
+            <div className="space-y-3 rounded-xl border border-cyan-900/40 bg-[#0a182a] p-4">
+              <div>
+                <h3 className="font-bold text-white">Account balances</h3>
+                <p className="text-[11px] text-slate-400">Current balance = opening amount + receipts − refunds − expenses ± balance movements.</p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[560px] text-left text-xs text-slate-300">
+                  <thead><tr className="border-b border-cyan-900/50 text-[10px] uppercase text-cyan-300"><th className="py-2">Account</th><th className="py-2">Currency</th><th className="py-2">Opening</th><th className="py-2">Receipts</th><th className="py-2">Expenses</th><th className="py-2">Current</th></tr></thead>
+                  <tbody className="divide-y divide-cyan-900/30">
+                    {accountBalances.map((balance) => <tr key={`${balance.currency}:${balance.account}`}>
+                      <td className="py-2">{balance.account}</td><td>{balance.currency}</td><td>{balance.opening_balance.toLocaleString()}</td><td className="text-emerald-300">{balance.income.toLocaleString()}</td><td className="text-rose-300">{balance.expenses.toLocaleString()}</td><td className="font-mono font-bold text-white">{balance.current_balance.toLocaleString()}</td>
+                    </tr>)}
+                    {accountBalances.length === 0 && <tr><td colSpan={6} className="py-5 text-center text-slate-500">No posted account activity or opening balances yet.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+              <h4 className="pt-2 text-sm font-semibold text-white">Opening balances</h4>
+              <div className="space-y-2">
+                {openingBalanceDraft.map((balance, index) => (
+                  <div key={`${balance.account}-${balance.currency}-${index}`} className="grid grid-cols-12 gap-2">
+                    <input aria-label={`Opening balance account ${index + 1}`} value={balance.account} onChange={(event) => setOpeningBalanceDraft((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, account: event.target.value } : row))} placeholder="Account name" className="col-span-6 min-h-9 rounded border border-cyan-900/50 bg-[#071322] px-2 text-xs text-white" />
+                    <select aria-label={`Opening balance currency ${index + 1}`} value={balance.currency} onChange={(event) => setOpeningBalanceDraft((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, currency: event.target.value } : row))} className="col-span-2 min-h-9 rounded border border-cyan-900/50 bg-[#071322] px-2 text-xs text-white"><option>EUR</option><option>USD</option><option>EGP</option><option>GBP</option></select>
+                    <input aria-label={`Opening balance amount ${index + 1}`} type="number" min="0" step="0.01" value={balance.amount} onChange={(event) => setOpeningBalanceDraft((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, amount: Number(event.target.value) } : row))} className="col-span-3 min-h-9 rounded border border-cyan-900/50 bg-[#071322] px-2 text-right text-xs text-white" />
+                    <button type="button" aria-label={`Remove opening balance ${balance.account}`} onClick={() => setOpeningBalanceDraft((current) => current.filter((_, rowIndex) => rowIndex !== index))} className="col-span-1 min-h-9 rounded text-rose-300 hover:bg-rose-950/50">×</button>
+                  </div>
+                ))}
+                <div className="flex flex-wrap justify-between gap-2">
+                  <button type="button" onClick={() => setOpeningBalanceDraft((current) => [...current, { account: '', currency: 'EUR', amount: 0 }])} className="min-h-9 rounded border border-cyan-800 px-3 text-xs text-cyan-200">Add account</button>
+                  <button type="button" disabled={submitting} onClick={handleSaveOpeningBalances} className="min-h-9 rounded bg-cyan-600 px-4 text-xs font-semibold text-white disabled:opacity-50">Save opening balances</button>
+                </div>
+              </div>
+            </div>
+
+            <form onSubmit={handleMovementSubmit} className="space-y-3 rounded-xl border border-cyan-900/40 bg-[#0a182a] p-4">
+              <div>
+                <h3 className="font-bold text-white">Record account movement</h3>
+                <p className="text-[11px] text-slate-400">Transfers and exchanges update account positions only; they are not income or expenses.</p>
+              </div>
+              <div>
+                <label htmlFor="movement-type" className="mb-1 block text-[11px] font-semibold text-slate-300">Movement type</label>
+                <select id="movement-type" value={movementForm.movement_type} onChange={(event) => setMovementForm({ ...movementForm, movement_type: event.target.value })} className="min-h-10 w-full rounded border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white"><option value="transfer">Transfer</option><option value="exchange">Currency exchange</option></select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="space-y-1 text-[11px] text-slate-300">From account<input required maxLength={100} value={movementForm.from_account} onChange={(event) => setMovementForm({ ...movementForm, from_account: event.target.value })} className="min-h-10 w-full rounded border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white" /></label>
+                <label className="space-y-1 text-[11px] text-slate-300">To account<input required maxLength={100} value={movementForm.to_account} onChange={(event) => setMovementForm({ ...movementForm, to_account: event.target.value })} className="min-h-10 w-full rounded border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white" /></label>
+                <label className="space-y-1 text-[11px] text-slate-300">From currency<select value={movementForm.from_currency} onChange={(event) => setMovementForm({ ...movementForm, from_currency: event.target.value, ...(movementForm.movement_type === 'transfer' ? { to_currency: event.target.value } : {}) })} className="min-h-10 w-full rounded border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white"><option>EUR</option><option>USD</option><option>EGP</option><option>GBP</option></select></label>
+                <label className="space-y-1 text-[11px] text-slate-300">To currency<select value={movementForm.to_currency} onChange={(event) => setMovementForm({ ...movementForm, to_currency: event.target.value })} disabled={movementForm.movement_type === 'transfer'} className="min-h-10 w-full rounded border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white"><option>EUR</option><option>USD</option><option>EGP</option><option>GBP</option></select></label>
+                <label className="space-y-1 text-[11px] text-slate-300">Amount out<input required type="number" min="0.01" step="0.01" value={movementForm.from_amount || ''} onChange={(event) => setMovementForm({ ...movementForm, from_amount: Number(event.target.value), ...(movementForm.movement_type === 'transfer' ? { to_amount: Number(event.target.value) } : {}) })} className="min-h-10 w-full rounded border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white" /></label>
+                <label className="space-y-1 text-[11px] text-slate-300">Amount in<input required type="number" min="0.01" step="0.01" value={movementForm.to_amount || ''} onChange={(event) => setMovementForm({ ...movementForm, to_amount: Number(event.target.value) })} className="min-h-10 w-full rounded border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white" /></label>
+                <label className="space-y-1 text-[11px] text-slate-300">Date<input required type="date" value={movementForm.movement_date} onChange={(event) => setMovementForm({ ...movementForm, movement_date: event.target.value })} className="min-h-10 w-full rounded border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white" /></label>
+                <label className="space-y-1 text-[11px] text-slate-300">Reference<input maxLength={100} value={movementForm.reference_number} onChange={(event) => setMovementForm({ ...movementForm, reference_number: event.target.value })} className="min-h-10 w-full rounded border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white" /></label>
+              </div>
+              <label className="block space-y-1 text-[11px] text-slate-300">Notes<input maxLength={500} value={movementForm.notes} onChange={(event) => setMovementForm({ ...movementForm, notes: event.target.value })} className="min-h-10 w-full rounded border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white" /></label>
+              <button type="submit" disabled={submitting} className="min-h-10 rounded bg-emerald-600 px-4 text-xs font-semibold text-white disabled:opacity-50">{submitting ? 'Saving…' : 'Record movement'}</button>
+            </form>
+          </div>
+
+          <div className="space-y-3 rounded-xl border border-cyan-900/40 bg-[#0a182a] p-4">
+            <div>
+              <h3 className="font-bold text-white">Editable transaction categories</h3>
+              <p className="text-[11px] text-slate-400">“Bill customer” is a charge category; “FDD Income Receipt” is an income category. Neither is an expense.</p>
+            </div>
+            <div className="flex flex-wrap gap-2" role="group" aria-label="Category type">
+              {(['expense', 'billing', 'income'] as const).map((type) => <button key={type} type="button" onClick={() => setCategoryType(type)} aria-pressed={categoryType === type} className={`min-h-9 rounded-lg px-3 text-xs font-semibold capitalize ${categoryType === type ? 'bg-cyan-600 text-white' : 'border border-cyan-900 text-slate-300'}`}>{type}</button>)}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {financeCategories[categoryType].map((category) => <span key={category} className="inline-flex items-center gap-1 rounded-full border border-cyan-900/70 bg-[#071322] px-3 py-1 text-xs text-cyan-100">
+                {category}<button type="button" aria-label={`Remove ${category}`} onClick={() => setFinanceCategories((current) => ({ ...current, [categoryType]: current[categoryType].filter((item) => item !== category) }))} className="min-h-6 min-w-6 rounded-full text-rose-300 hover:bg-rose-950/50">×</button>
+              </span>)}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <input aria-label={`New ${categoryType} category`} value={categoryDraft} onChange={(event) => setCategoryDraft(event.target.value)} maxLength={80} className="min-h-10 flex-1 rounded border border-cyan-900/50 bg-[#071322] px-3 text-xs text-white" placeholder="Add a category" />
+              <button type="button" disabled={!categoryDraft.trim()} onClick={() => {
+                const normalized = categoryDraft.trim();
+                if (financeCategories[categoryType].some((item) => item.toLowerCase() === normalized.toLowerCase())) {
+                  setFormError('That category already exists.');
+                  return;
+                }
+                setFormError(null);
+                setFinanceCategories((current) => ({ ...current, [categoryType]: [...current[categoryType], normalized] }));
+                setCategoryDraft('');
+              }} className="min-h-10 rounded border border-cyan-800 px-4 text-xs text-cyan-200 disabled:opacity-40">Add</button>
+              <button type="button" disabled={submitting} onClick={handleSaveCategories} className="min-h-10 rounded bg-cyan-600 px-4 text-xs font-semibold text-white disabled:opacity-50">Save categories</button>
+            </div>
+          </div>
+
+          <div className="overflow-hidden rounded-xl border border-cyan-900/40 bg-[#0a182a]">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[820px] text-left text-xs text-slate-300">
+                <thead><tr className="border-b border-cyan-900/50 bg-[#071424] text-[10px] uppercase text-cyan-300"><th className="px-3 py-3">Date</th><th className="px-3 py-3">Type</th><th className="px-3 py-3">From</th><th className="px-3 py-3">To</th><th className="px-3 py-3">Reference / notes</th><th className="px-3 py-3">Staff</th></tr></thead>
+                <tbody className="divide-y divide-cyan-900/30">{accountMovements.map((movement) => <tr key={movement.id}>
+                  <td className="px-3 py-3">{movement.movement_date}</td><td className="px-3 py-3 capitalize">{movement.movement_type}</td><td className="px-3 py-3">{movement.from_currency} {movement.from_amount_cents / 100} · {movement.from_account}</td><td className="px-3 py-3">{movement.to_currency} {movement.to_amount_cents / 100} · {movement.to_account}</td><td className="px-3 py-3">{movement.reference_number || movement.notes || '—'}</td><td className="px-3 py-3">{movement.recorded_by_name || '—'}</td>
+                </tr>)}
+                {accountMovements.length === 0 && <tr><td colSpan={6} className="py-6 text-center text-slate-500">No transfers or exchanges recorded.</td></tr>}</tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* CREATE CUSTOMER REQUEST MODAL */}
       {isRequestModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
@@ -1114,6 +1868,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                     <option value="EUR">EUR (€)</option>
                     <option value="EGP">EGP (Egyptian Pound)</option>
                     <option value="USD">USD ($)</option>
+                    <option value="GBP">GBP (£)</option>
                   </select>
                 </div>
               </div>
@@ -1125,7 +1880,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                     type="button"
                     onClick={() => setRequestItems((current) => [
                       ...current,
-                      { category: 'course', description: requestCatalog.course[0].description, quantity: 1, unit_price: newCustomerRequest.currency === 'EUR' ? requestCatalog.course[0].price : 0 },
+                      { category: 'course', description: requestCatalog.course[0].description, quantity: 1, unit_price: newCustomerRequest.currency === 'EUR' ? requestCatalog.course[0].price : 0, beneficiary_student_id: '', deposit_allocation: 0 },
                     ])}
                     className="min-h-8 rounded-lg border border-cyan-800 px-3 py-1 text-cyan-200 hover:bg-cyan-950 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
                   >
@@ -1154,6 +1909,18 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                           <option value="other">Other</option>
                         </select>
                       </div>
+                      <div className="sm:col-span-12">
+                        <label htmlFor={`request-beneficiary-${index}`} className="block text-slate-300 mb-1">Service for *</label>
+                        <select
+                          id={`request-beneficiary-${index}`}
+                          required
+                          value={item.beneficiary_student_id || newCustomerRequest.student_id}
+                          onChange={(event) => updateRequestItem(index, { beneficiary_student_id: event.target.value })}
+                          className="w-full min-h-10 bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
+                        >
+                          {students.map((student) => <option key={student.id} value={student.id}>{student.first_name} {student.last_name}</option>)}
+                        </select>
+                      </div>
                       <div className="sm:col-span-5">
                         <label htmlFor={`request-description-${index}`} className="block text-slate-300 mb-1">Item *</label>
                         <select
@@ -1170,6 +1937,41 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                           ))}
                         </select>
                       </div>
+                      {item.category === 'accommodation' && (
+                        <div className="sm:col-span-12 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <div>
+                            <label htmlFor={`request-check-in-${index}`} className="block text-slate-300 mb-1">Check-in *</label>
+                            <input
+                              id={`request-check-in-${index}`}
+                              type="date"
+                              required
+                              value={item.check_in_date || ''}
+                              onChange={(event) => {
+                                const checkInDate = event.target.value;
+                                const nights = stayNights(checkInDate, item.check_out_date);
+                                updateRequestItem(index, { check_in_date: checkInDate, ...(nights > 0 ? { quantity: nights } : {}) });
+                              }}
+                              className="w-full min-h-10 bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
+                            />
+                          </div>
+                          <div>
+                            <label htmlFor={`request-check-out-${index}`} className="block text-slate-300 mb-1">Check-out *</label>
+                            <input
+                              id={`request-check-out-${index}`}
+                              type="date"
+                              required
+                              min={item.check_in_date}
+                              value={item.check_out_date || ''}
+                              onChange={(event) => {
+                                const checkOutDate = event.target.value;
+                                const nights = stayNights(item.check_in_date, checkOutDate);
+                                updateRequestItem(index, { check_out_date: checkOutDate, ...(nights > 0 ? { quantity: nights } : {}) });
+                              }}
+                              className="w-full min-h-10 bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
+                            />
+                          </div>
+                        </div>
+                      )}
                       <div className="sm:col-span-2">
                         <label htmlFor={`request-quantity-${index}`} className="block text-slate-300 mb-1">{unit === 'night' ? 'Nights' : 'Quantity'} *</label>
                         <input
@@ -1189,10 +1991,23 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                           id={`request-price-${index}`}
                           type="number"
                           required
-                          min={minimumRequestDeposit}
+                          min="0.01"
                           step="0.01"
                           value={item.unit_price || ''}
                           onChange={(event) => updateRequestItem(index, { unit_price: Number(event.target.value) })}
+                          className="w-full min-h-10 bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
+                        />
+                      </div>
+                      <div className="sm:col-span-12">
+                        <label htmlFor={`request-allocation-${index}`} className="block text-slate-300 mb-1">Deposit allocated to this service ({newCustomerRequest.currency})</label>
+                        <input
+                          id={`request-allocation-${index}`}
+                          type="number"
+                          min="0"
+                          max={item.quantity * item.unit_price}
+                          step="0.01"
+                          value={item.deposit_allocation || ''}
+                          onChange={(event) => updateRequestItem(index, { deposit_allocation: Number(event.target.value) })}
                           className="w-full min-h-10 bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
                         />
                       </div>
@@ -1215,6 +2030,9 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                 </p>
                 <div className="text-right font-mono text-sm font-bold text-white">
                   Request total: {newCustomerRequest.currency} {requestTotal.toLocaleString()}
+                </div>
+                <div className={`text-right text-xs font-semibold ${Math.round(allocatedRequestDeposit * 100) === Math.round(newCustomerRequest.initial_payment.amount * 100) ? 'text-emerald-300' : 'text-amber-300'}`}>
+                  Deposit allocation: {newCustomerRequest.currency} {allocatedRequestDeposit.toFixed(2)} / {newCustomerRequest.initial_payment.amount.toFixed(2)}
                 </div>
               </div>
 
@@ -1258,10 +2076,16 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                     <select
                       id="request-payment-method"
                       value={newCustomerRequest.initial_payment.payment_method}
-                      onChange={(event) => setNewCustomerRequest({
-                        ...newCustomerRequest,
-                        initial_payment: { ...newCustomerRequest.initial_payment, payment_method: event.target.value },
-                      })}
+                      onChange={(event) => setNewCustomerRequest((current) => ({
+                        ...current,
+                        initial_payment: {
+                          ...current.initial_payment,
+                          payment_method: event.target.value,
+                          payment_account: current.initial_payment.payment_account.startsWith('Cash ')
+                            ? event.target.value
+                            : current.initial_payment.payment_account,
+                        },
+                      }))}
                       className="w-full min-h-10 bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400"
                     >
                       <option value={`Cash ${newCustomerRequest.currency}`}>Cash ({newCustomerRequest.currency})</option>
@@ -1269,6 +2093,20 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                       <option value="Bank Transfer">Bank transfer</option>
                       <option value="InstaPay Egypt">InstaPay Egypt</option>
                     </select>
+                  </div>
+                  <div>
+                    <label htmlFor="request-payment-account" className="block text-slate-300 mb-1">Payment account *</label>
+                    <input
+                      id="request-payment-account"
+                      required
+                      maxLength={100}
+                      value={newCustomerRequest.initial_payment.payment_account}
+                      onChange={(event) => setNewCustomerRequest({
+                        ...newCustomerRequest,
+                        initial_payment: { ...newCustomerRequest.initial_payment, payment_account: event.target.value },
+                      })}
+                      className="w-full min-h-10 bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400"
+                    />
                   </div>
                   <div>
                     <label htmlFor="request-payment-date" className="block text-slate-300 mb-1">Payment date *</label>
@@ -1400,7 +2238,11 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                   <select
                     id="finance-payment-method"
                     value={paymentData.payment_method}
-                    onChange={(e) => setPaymentData({ ...paymentData, payment_method: e.target.value })}
+                    onChange={(e) => setPaymentData((current) => ({
+                      ...current,
+                      payment_method: e.target.value,
+                      payment_account: current.payment_account.startsWith('Cash ') ? e.target.value : current.payment_account,
+                    }))}
                     className="w-full bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus:outline-none focus:border-cyan-400"
                   >
                     <option value={`Cash ${paymentData.currency}`}>Cash ({paymentData.currency})</option>
@@ -1410,6 +2252,60 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                   </select>
                 </div>
               </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="finance-payment-date" className="block text-slate-400 mb-1">Payment date *</label>
+                  <input id="finance-payment-date" type="date" required value={paymentData.payment_date} onChange={(event) => setPaymentData({ ...paymentData, payment_date: event.target.value })} className="w-full bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400" />
+                </div>
+                <div>
+                  <label htmlFor="finance-payment-account" className="block text-slate-400 mb-1">Payment account *</label>
+                  <input id="finance-payment-account" required maxLength={100} value={paymentData.payment_account} onChange={(event) => setPaymentData({ ...paymentData, payment_account: event.target.value })} className="w-full bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400" />
+                </div>
+              </div>
+
+              <fieldset className="space-y-3 rounded-xl border border-cyan-900/50 bg-[#0c1f36] p-3">
+                <legend className="px-2 font-semibold text-cyan-100">Allocate this payment to services and beneficiaries *</legend>
+                <p className="text-[11px] text-slate-400">Allocation total must equal the payment exactly. Add another row to split a service between customers.</p>
+                {paymentAllocations.map((allocation, index) => (
+                  <div key={`${index}-${allocation.item_id}`} className="grid grid-cols-1 gap-2 rounded-lg border border-cyan-900/40 p-2 sm:grid-cols-12">
+                    <div className="sm:col-span-5">
+                      <label htmlFor={`payment-service-${index}`} className="mb-1 block text-slate-400">Service *</label>
+                      <select id={`payment-service-${index}`} required value={allocation.item_id} onChange={(event) => setPaymentAllocations((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, item_id: event.target.value } : row))} className="min-h-10 w-full rounded border border-cyan-900/60 bg-[#071322] p-2 text-white">
+                        {(selectedInvoiceForPayment.items || []).map((item) => <option key={item.id} value={item.id}>{item.description}</option>)}
+                      </select>
+                    </div>
+                    <div className="sm:col-span-4">
+                      <label htmlFor={`payment-beneficiary-${index}`} className="mb-1 block text-slate-400">Service for *</label>
+                      <select id={`payment-beneficiary-${index}`} required value={allocation.beneficiary_student_id} onChange={(event) => setPaymentAllocations((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, beneficiary_student_id: event.target.value } : row))} className="min-h-10 w-full rounded border border-cyan-900/60 bg-[#071322] p-2 text-white">
+                        {students.map((student) => <option key={student.id} value={student.id}>{student.first_name} {student.last_name}</option>)}
+                      </select>
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label htmlFor={`payment-allocation-${index}`} className="mb-1 block text-slate-400">Amount *</label>
+                      <input id={`payment-allocation-${index}`} required type="number" min="0" max={paymentData.amount} step="0.01" value={allocation.amount || ''} onChange={(event) => setPaymentAllocations((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, amount: Number(event.target.value) } : row))} className="min-h-10 w-full rounded border border-cyan-900/60 bg-[#071322] p-2 text-right font-mono text-white" />
+                    </div>
+                    <div className="flex items-end sm:col-span-1">
+                      <button type="button" disabled={paymentAllocations.length <= 1} aria-label={`Remove allocation ${index + 1}`} onClick={() => setPaymentAllocations((current) => current.filter((_, rowIndex) => rowIndex !== index))} className="min-h-10 w-full rounded text-rose-300 hover:bg-rose-950/50 disabled:opacity-30">×</button>
+                    </div>
+                  </div>
+                ))}
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <button type="button" onClick={() => {
+                    const item = selectedInvoiceForPayment.items?.[0];
+                    if (!item) return;
+                    const unassignedStudent = students.find((student) => !paymentAllocations.some((row) => row.item_id === item.id && row.beneficiary_student_id === student.id));
+                    setPaymentAllocations((current) => [...current, {
+                      item_id: item.id || '',
+                      beneficiary_student_id: unassignedStudent?.id || selectedInvoiceForPayment.student_id,
+                      amount: 0,
+                    }]);
+                  }} className="min-h-9 rounded border border-cyan-800 px-3 text-cyan-200">Add allocation</button>
+                  <span className={Math.round(paymentAllocations.reduce((sum, allocation) => sum + allocation.amount, 0) * 100) === Math.round(paymentData.amount * 100) ? 'font-semibold text-emerald-300' : 'font-semibold text-amber-300'}>
+                    Allocated {paymentData.currency} {paymentAllocations.reduce((sum, allocation) => sum + allocation.amount, 0).toFixed(2)} / {paymentData.amount.toFixed(2)}
+                  </span>
+                </div>
+              </fieldset>
 
               <div>
                 <label htmlFor="finance-payment-reference" className="block text-slate-400 mb-1">Transaction / Reference #</label>
@@ -1453,6 +2349,88 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
             </form>
           </div>
         </div>
+      )}
+
+      {adjustmentTarget && (
+        <dialog ref={adjustmentDialogRef} aria-labelledby="finance-adjustment-title" onClose={() => setAdjustmentTarget(null)} className="m-auto max-h-[90vh] w-[min(96vw,600px)] overflow-hidden rounded-2xl border border-rose-900/60 bg-[#091728] p-0 text-slate-200 shadow-2xl backdrop:bg-black/75">
+          <div className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-rose-900/60 bg-[#091728] text-slate-200 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-rose-900/50 bg-[#071322] p-5">
+              <div>
+                <h3 id="finance-adjustment-title" className="font-bold text-white">Refund, reversal, or correction</h3>
+                <p className="mt-1 text-[11px] text-slate-400">{adjustmentTarget.invoice.invoice_number} · {adjustmentTarget.payment.payment_date} · {adjustmentTarget.payment.currency} {adjustmentTarget.payment.amount.toFixed(2)}</p>
+              </div>
+              <button type="button" aria-label="Close adjustment form" onClick={() => setAdjustmentTarget(null)} className="min-h-10 min-w-10 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300"><X className="mx-auto h-5 w-5" /></button>
+            </div>
+            <form onSubmit={handleAdjustmentSubmit} className="space-y-4 p-5 text-xs">
+              {formError && <div role="alert" className="rounded-lg border border-rose-800 bg-rose-950/80 p-3 text-rose-200">{formError}</div>}
+              <div className="grid grid-cols-2 gap-3">
+                <label className="space-y-1 text-slate-300">Adjustment type
+                  <select value={adjustmentData.adjustment_type} onChange={(event) => setAdjustmentData({ ...adjustmentData, adjustment_type: event.target.value, direction: event.target.value === 'correction' ? adjustmentData.direction : 'debit' })} className="min-h-10 w-full rounded border border-cyan-900/60 bg-[#071322] p-2 text-white">
+                    <option value="refund">Refund</option><option value="reversal">Full reversal</option><option value="correction">Correction</option>
+                  </select>
+                </label>
+                <label className="space-y-1 text-slate-300">Direction
+                  <select value={adjustmentData.direction} disabled={adjustmentData.adjustment_type !== 'correction'} onChange={(event) => setAdjustmentData({ ...adjustmentData, direction: event.target.value })} className="min-h-10 w-full rounded border border-cyan-900/60 bg-[#071322] p-2 text-white disabled:opacity-60">
+                    <option value="debit">Debit · reduces cash collected</option><option value="credit">Credit · increases cash collected</option>
+                  </select>
+                </label>
+                <label className="space-y-1 text-slate-300">Date
+                  <input required type="date" value={adjustmentData.adjustment_date} onChange={(event) => setAdjustmentData({ ...adjustmentData, adjustment_date: event.target.value })} className="min-h-10 w-full rounded border border-cyan-900/60 bg-[#071322] p-2 text-white" />
+                </label>
+                <label className="space-y-1 text-slate-300">Refund / adjustment method
+                  <select value={adjustmentData.payment_method} onChange={(event) => setAdjustmentData({ ...adjustmentData, payment_method: event.target.value })} className="min-h-10 w-full rounded border border-cyan-900/60 bg-[#071322] p-2 text-white">
+                    <option value={`Cash ${adjustmentTarget.payment.currency}`}>Cash ({adjustmentTarget.payment.currency})</option><option value="Credit Card">Credit card</option><option value="Bank Transfer">Bank transfer</option><option value="InstaPay Egypt">InstaPay Egypt</option>
+                  </select>
+                </label>
+                <label className="space-y-1 text-slate-300">Account
+                  <input required maxLength={100} value={adjustmentData.payment_account} onChange={(event) => setAdjustmentData({ ...adjustmentData, payment_account: event.target.value })} className="min-h-10 w-full rounded border border-cyan-900/60 bg-[#071322] p-2 text-white" />
+                </label>
+                <label className="space-y-1 text-slate-300">Reference
+                  <input maxLength={100} value={adjustmentData.reference_number} onChange={(event) => setAdjustmentData({ ...adjustmentData, reference_number: event.target.value })} className="min-h-10 w-full rounded border border-cyan-900/60 bg-[#071322] p-2 text-white" />
+                </label>
+              </div>
+              <label className="block space-y-1 text-slate-300">Reason *
+                <input required maxLength={500} value={adjustmentData.reason} onChange={(event) => setAdjustmentData({ ...adjustmentData, reason: event.target.value })} className="min-h-10 w-full rounded border border-cyan-900/60 bg-[#071322] p-2 text-white" />
+              </label>
+              <fieldset className="space-y-2 rounded-xl border border-rose-900/50 bg-[#0c1f36] p-3">
+                <legend className="px-2 font-semibold text-rose-200">Allocate to original payment services *</legend>
+                {adjustmentAllocations.map((allocation, index) => {
+                  const original = allocation.payment_allocation_id
+                    ? adjustmentTarget.payment.allocations?.find((item) => item.id === allocation.payment_allocation_id)
+                    : undefined;
+                  return (
+                    <div key={allocation.payment_allocation_id || `${allocation.item_id}-${index}`} className="grid grid-cols-1 items-center gap-2 sm:grid-cols-[minmax(0,1fr)_150px]">
+                      {original ? (
+                        <span className="text-slate-300">{original.service_label} · {[original.beneficiary_first_name, original.beneficiary_last_name].filter(Boolean).join(' ') || 'Customer'}</span>
+                      ) : (
+                        <div className="grid grid-cols-2 gap-2">
+                          <label className="sr-only" htmlFor={`adjustment-service-${index}`}>Service</label>
+                          <select id={`adjustment-service-${index}`} required value={allocation.item_id} onChange={(event) => setAdjustmentAllocations((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, item_id: event.target.value } : row))} className="min-h-10 rounded border border-cyan-900/60 bg-[#071322] p-2 text-white">
+                            {(adjustmentTarget.invoice.items || []).map((item) => <option key={item.id} value={item.id}>{item.description}</option>)}
+                          </select>
+                          <label className="sr-only" htmlFor={`adjustment-beneficiary-${index}`}>Beneficiary</label>
+                          <select id={`adjustment-beneficiary-${index}`} required value={allocation.beneficiary_student_id} onChange={(event) => setAdjustmentAllocations((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, beneficiary_student_id: event.target.value } : row))} className="min-h-10 rounded border border-cyan-900/60 bg-[#071322] p-2 text-white">
+                            {students.map((student) => <option key={student.id} value={student.id}>{student.first_name} {student.last_name}</option>)}
+                          </select>
+                        </div>
+                      )}
+                      <label className="sr-only" htmlFor={`adjustment-amount-${index}`}>Adjustment amount for {original?.service_label || `service ${index + 1}`}</label>
+                      <input id={`adjustment-amount-${index}`} type="number" min="0" max={original ? original.amount_cents / 100 : adjustmentTarget.payment.amount} step="0.01" value={allocation.amount || ''} onChange={(event) => setAdjustmentAllocations((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, amount: Number(event.target.value) } : row))} className="min-h-10 rounded border border-cyan-900/60 bg-[#071322] p-2 text-right font-mono text-white" />
+                    </div>
+                  );
+                })}
+                <p className="text-right font-mono font-semibold text-white">
+                  Adjustment total: {adjustmentTarget.payment.currency} {adjustmentAllocations.reduce((sum, allocation) => sum + allocation.amount, 0).toFixed(2)}
+                </p>
+              </fieldset>
+              <p className="text-[11px] text-slate-400">This creates an append-only, staff-attributed record linked to the original payment. It cannot be silently edited or deleted.</p>
+              <div className="flex justify-end gap-2 border-t border-cyan-900/50 pt-3">
+                <button type="button" onClick={() => setAdjustmentTarget(null)} className="min-h-10 rounded-xl bg-slate-800 px-4 text-slate-300">Cancel</button>
+                <button type="submit" disabled={submitting || adjustmentAllocations.reduce((sum, allocation) => sum + allocation.amount, 0) <= 0} className="min-h-10 rounded-xl bg-rose-600 px-4 font-semibold text-white disabled:opacity-50">{submitting ? 'Recording…' : 'Record adjustment'}</button>
+              </div>
+            </form>
+          </div>
+        </dialog>
       )}
 
       {/* CREATE INVOICE MODAL */}
@@ -1506,6 +2484,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                     <option value="EUR">EUR (€)</option>
                     <option value="EGP">EGP (Egyptian Pound)</option>
                     <option value="USD">USD ($)</option>
+                    <option value="GBP">GBP (£)</option>
                   </select>
                 </div>
                 <div>
@@ -1530,7 +2509,17 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                     value={newInvoice.items[0]?.category}
                     onChange={(e) => {
                       const items = [...newInvoice.items];
-                      items[0] = { ...items[0], category: e.target.value as NonNullable<Invoice['items']>[number]['category'] };
+                      const category = e.target.value as NonNullable<Invoice['items']>[number]['category'];
+                      const checkInDate = localDateString(new Date());
+                      const checkOutDate = new Date();
+                      checkOutDate.setDate(checkOutDate.getDate() + 1);
+                      items[0] = {
+                        ...items[0],
+                        category,
+                        check_in_date: category === 'accommodation' ? checkInDate : '',
+                        check_out_date: category === 'accommodation' ? localDateString(checkOutDate) : '',
+                        ...(category === 'accommodation' ? { quantity: 1 } : {}),
+                      };
                       setNewInvoice({ ...newInvoice, items });
                     }}
                     className="w-full bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
@@ -1540,6 +2529,51 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                     ))}
                   </select>
                 </div>
+                {newInvoice.items[0]?.category === 'accommodation' && (
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <label htmlFor="new-invoice-check-in" className="block text-slate-400 mb-1">Check-in *</label>
+                      <input
+                        id="new-invoice-check-in"
+                        type="date"
+                        required
+                        value={newInvoice.items[0]?.check_in_date || ''}
+                        onChange={(event) => {
+                          const items = [...newInvoice.items];
+                          const nights = stayNights(event.target.value, items[0].check_out_date);
+                          items[0] = {
+                            ...items[0],
+                            check_in_date: event.target.value,
+                            ...(nights > 0 ? { quantity: nights } : {}),
+                          };
+                          setNewInvoice({ ...newInvoice, items });
+                        }}
+                        className="w-full bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="new-invoice-check-out" className="block text-slate-400 mb-1">Check-out *</label>
+                      <input
+                        id="new-invoice-check-out"
+                        type="date"
+                        required
+                        min={newInvoice.items[0]?.check_in_date}
+                        value={newInvoice.items[0]?.check_out_date || ''}
+                        onChange={(event) => {
+                          const items = [...newInvoice.items];
+                          const nights = stayNights(items[0].check_in_date, event.target.value);
+                          items[0] = {
+                            ...items[0],
+                            check_out_date: event.target.value,
+                            ...(nights > 0 ? { quantity: nights } : {}),
+                          };
+                          setNewInvoice({ ...newInvoice, items });
+                        }}
+                        className="w-full bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
+                      />
+                    </div>
+                  </div>
+                )}
                 <div>
                   <label htmlFor="new-invoice-description" className="block text-slate-400 mb-1">Description</label>
                   <input
@@ -1645,17 +2679,12 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                 <div>
                   <label className="block text-slate-400 mb-1">Expense Category *</label>
                   <select
+                    required
                     value={newExpense.category}
                     onChange={(e) => setNewExpense({ ...newExpense, category: e.target.value })}
                     className="w-full bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus:outline-none focus:border-cyan-400"
                   >
-                    <option value="Boat Charter & Captain">Boat Charter & Captain</option>
-                    <option value="Dive Site Entry Fees">Dive Site Entry Fees (Protectorate)</option>
-                    <option value="Equipment Maintenance">Equipment Maintenance</option>
-                    <option value="Facility Rent & Utilities">Facility Rent & Utilities</option>
-                    <option value="Oxygen & Safety Gas">Oxygen & Safety Gas</option>
-                    <option value="Marketing">Marketing</option>
-                    <option value="Staff Welfare">Staff Welfare</option>
+                    {financeCategories.expense.map((category) => <option key={category} value={category}>{category}</option>)}
                   </select>
                 </div>
                 <div>
@@ -1685,13 +2714,52 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                   <label className="block text-slate-400 mb-1">Currency</label>
                   <select
                     value={newExpense.currency}
-                    onChange={(e) => setNewExpense({ ...newExpense, currency: e.target.value })}
+                    onChange={(e) => {
+                      const currency = e.target.value;
+                      const cashMethod = `Cash ${currency}`;
+                      setNewExpense((current) => ({
+                        ...current,
+                        currency,
+                        payment_method: current.payment_method.startsWith('Cash ') ? cashMethod : current.payment_method,
+                        payment_account: current.payment_account.startsWith('Cash ') ? cashMethod : current.payment_account,
+                      }));
+                    }}
                     className="w-full bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus:outline-none focus:border-cyan-400"
                   >
                     <option value="EGP">EGP (Egyptian Pound)</option>
                     <option value="EUR">EUR (€)</option>
                     <option value="USD">USD ($)</option>
+                    <option value="GBP">GBP (£)</option>
                   </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="expense-payment-method" className="block text-slate-400 mb-1">Payment method *</label>
+                  <select
+                    id="expense-payment-method"
+                    required
+                    value={newExpense.payment_method}
+                    onChange={(event) => setNewExpense({ ...newExpense, payment_method: event.target.value })}
+                    className="w-full bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus:outline-none focus:border-cyan-400"
+                  >
+                    <option value={`Cash ${newExpense.currency}`}>Cash ({newExpense.currency})</option>
+                    <option value="Credit Card">Credit card</option>
+                    <option value="Bank Transfer">Bank transfer</option>
+                    <option value="InstaPay Egypt">InstaPay Egypt</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="expense-payment-account" className="block text-slate-400 mb-1">Payment account *</label>
+                  <input
+                    id="expense-payment-account"
+                    required
+                    maxLength={100}
+                    value={newExpense.payment_account}
+                    onChange={(event) => setNewExpense({ ...newExpense, payment_account: event.target.value })}
+                    className="w-full bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus:outline-none focus:border-cyan-400"
+                  />
                 </div>
               </div>
 
@@ -1755,6 +2823,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
           onClose={() => setSelectedBill(null)}
           onSave={handleBillSave}
           onRecordPayment={handleBillPayment}
+          onAdjustPayment={openAdjustmentForm}
         />
       )}
     </div>

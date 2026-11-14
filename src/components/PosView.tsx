@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Anchor, BedDouble, Check, ChevronDown, CircleDollarSign, GraduationCap, Package, Plus, ShoppingBag, Trash2 } from 'lucide-react';
 import { CustomerRequestInput, CustomerRequestItemInput, Equipment, Student } from '../types';
 
-type Currency = 'EUR' | 'EGP' | 'USD';
+type Currency = 'EUR' | 'EGP' | 'USD' | 'GBP';
 type CatalogGroup = 'Courses' | 'Packages' | 'Training' | 'Activities' | 'Accommodation' | 'Shop' | 'Gear rental';
 
 interface Product {
@@ -25,6 +25,8 @@ interface CartLine extends CustomerRequestItemInput {
   editablePrice: boolean;
   tier?: Product['tier'];
   stayDiscount?: boolean;
+  deposit_allocation: number;
+  beneficiary_student_id: string;
 }
 
 interface PosViewProps {
@@ -45,6 +47,13 @@ const daysFromNow = (days: number) => {
   const date = new Date();
   date.setDate(date.getDate() + days);
   return localDate(date);
+};
+
+const countStayNights = (checkIn?: string, checkOut?: string) => {
+  if (!checkIn || !checkOut) return 0;
+  const start = Date.parse(`${checkIn}T00:00:00.000Z`);
+  const end = Date.parse(`${checkOut}T00:00:00.000Z`);
+  return Number.isFinite(start) && Number.isFinite(end) ? Math.round((end - start) / 86_400_000) : 0;
 };
 
 const publishedProducts: Product[] = [
@@ -141,6 +150,7 @@ export const PosView: React.FC<PosViewProps> = ({ students, equipment, onCreateC
   const [specialRequest, setSpecialRequest] = useState('');
   const [deposit, setDeposit] = useState('');
   const [paymentMethod, setPaymentMethod] = useState(`Cash EUR`);
+  const [paymentAccount, setPaymentAccount] = useState('Cash EUR');
   const [paymentDate, setPaymentDate] = useState(() => localDate(new Date()));
   const [paymentReference, setPaymentReference] = useState('');
   const [paymentNotes, setPaymentNotes] = useState('');
@@ -165,6 +175,8 @@ export const PosView: React.FC<PosViewProps> = ({ students, equipment, onCreateC
 
   const total = cart.reduce((sum, item) => sum + getUnitPrice(item) * item.quantity, 0);
   const minimumDeposit = Math.ceil(total * 0.3 * 100) / 100;
+  const depositAmount = Number(deposit);
+  const allocatedDeposit = cart.reduce((sum, item) => sum + Math.round(item.deposit_allocation * 100), 0) / 100;
   const hasGearRental = cart.some((item) => Boolean(item.equipment_id));
   const hasUnpricedItems = cart.some((item) => !Number.isFinite(item.unit_price) || item.unit_price <= 0);
 
@@ -182,9 +194,14 @@ export const PosView: React.FC<PosViewProps> = ({ students, equipment, onCreateC
         quantity: 1,
         unit_price: fixedPrice,
         editablePrice: !product.price || !priceMatchesCurrency,
+        deposit_allocation: 0,
+        beneficiary_student_id: studentId,
         equipment_id: product.equipmentId,
         tier: product.tier,
         stayDiscount: product.stayDiscount,
+        ...(product.category === 'accommodation'
+          ? { check_in_date: localDate(new Date()), check_out_date: daysFromNow(1) }
+          : {}),
       },
     ]);
   };
@@ -196,6 +213,7 @@ export const PosView: React.FC<PosViewProps> = ({ students, equipment, onCreateC
   const handleCurrencyChange = (nextCurrency: Currency) => {
     setCurrency(nextCurrency);
     setPaymentMethod(`Cash ${nextCurrency}`);
+    setPaymentAccount(`Cash ${nextCurrency}`);
   };
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -207,6 +225,10 @@ export const PosView: React.FC<PosViewProps> = ({ students, equipment, onCreateC
       setFormError('Choose a customer before saving this sale.');
       return;
     }
+    if (Math.round(allocatedDeposit * 100) !== Math.round(depositAmount * 100)) {
+      setFormError('Allocate the full deposit across the listed services before saving.');
+      return;
+    }
     if (!cart.length || hasUnpricedItems) {
       setFormError('Add at least one item and confirm every price before saving.');
       return;
@@ -215,13 +237,17 @@ export const PosView: React.FC<PosViewProps> = ({ students, equipment, onCreateC
       setFormError('The requested rental quantity exceeds current availability. Remove the item or reduce its quantity.');
       return;
     }
-    const depositAmount = Number(deposit);
     if (!Number.isFinite(depositAmount) || depositAmount < minimumDeposit || depositAmount > total) {
       setFormError(`Record a deposit between ${formatMoney(minimumDeposit, currency)} and ${formatMoney(total, currency)}.`);
       return;
     }
     if (hasGearRental && !rentalReturnDate) {
       setFormError('Choose an expected return date for the gear rental.');
+      return;
+    }
+    if (cart.some((item) => item.category === 'accommodation' &&
+      countStayNights(item.check_in_date, item.check_out_date) <= 0)) {
+      setFormError('Choose valid accommodation check-in and check-out dates, with check-out after check-in.');
       return;
     }
 
@@ -238,13 +264,22 @@ export const PosView: React.FC<PosViewProps> = ({ students, equipment, onCreateC
           quantity: item.quantity,
           unit_price: getUnitPrice(item),
           ...(item.equipment_id ? { equipment_id: item.equipment_id, expected_return: rentalReturnDate } : {}),
+          ...(item.category === 'accommodation'
+            ? { check_in_date: item.check_in_date, check_out_date: item.check_out_date }
+            : {}),
         })),
         initial_payment: {
           amount: depositAmount,
           payment_method: paymentMethod,
+          payment_account: paymentAccount,
           payment_date: paymentDate,
           reference_number: paymentReference,
           notes: paymentNotes,
+          allocations: cart.map((item, index) => ({
+            item_index: index,
+            beneficiary_student_id: item.beneficiary_student_id,
+            amount: item.deposit_allocation,
+          })).filter((allocation) => allocation.amount > 0),
         },
       });
       await onRefresh();
@@ -253,7 +288,7 @@ export const PosView: React.FC<PosViewProps> = ({ students, equipment, onCreateC
       setDeposit('');
       setPaymentReference('');
       setPaymentNotes('');
-      setSuccess('Sale saved. The customer bill and deposit are available in Invoices & Bills.');
+      setSuccess('Sale saved. The customer bill and deposit are available in Finance.');
     } catch (error) {
       setFormError(error instanceof Error ? error.message : 'The sale could not be saved.');
     } finally {
@@ -270,6 +305,18 @@ export const PosView: React.FC<PosViewProps> = ({ students, equipment, onCreateC
             Build a customer bill from the Freedive Dahab catalogue and record the deposit once.
           </p>
         </div>
+        <div>
+          <label htmlFor="pos-payment-account" className="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">Payment account *</label>
+          <input
+            id="pos-payment-account"
+            required
+            maxLength={100}
+            value={paymentAccount}
+            onChange={(event) => setPaymentAccount(event.target.value)}
+            placeholder="Cash EUR safe, Wise, Bank EUR..."
+            className="min-h-11 w-full rounded-lg border border-[#E2E8F0] bg-white px-3 text-sm text-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#4C8BF5] dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+          />
+        </div>
         <div className="w-full sm:w-44">
           <label htmlFor="pos-currency" className="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">
             Bill currency
@@ -284,6 +331,7 @@ export const PosView: React.FC<PosViewProps> = ({ students, equipment, onCreateC
             <option value="EUR">EUR — Euro</option>
             <option value="EGP">EGP — Egyptian Pound</option>
             <option value="USD">USD — US Dollar</option>
+            <option value="GBP">GBP — British Pound</option>
           </select>
         </div>
       </header>
@@ -394,7 +442,7 @@ export const PosView: React.FC<PosViewProps> = ({ students, equipment, onCreateC
             {cart.length ? (
               <ul className="divide-y divide-[#E8EEF7] dark:divide-slate-800">
                 {cart.map((item) => {
-                  const unit = item.description.toLowerCase().includes('room') ? 'night' : 'item';
+                  const unit = item.stayDiscount ? 'night' : 'item';
                   const lineTotal = getUnitPrice(item) * item.quantity;
                   return (
                     <li key={item.id} className="space-y-3 py-4 first:pt-1">
@@ -412,7 +460,7 @@ export const PosView: React.FC<PosViewProps> = ({ students, equipment, onCreateC
                       <div className="grid grid-cols-2 gap-3">
                         <div>
                           <label htmlFor={`pos-quantity-${item.id}`} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">
-                            Quantity {item.description.toLowerCase().includes('room') ? '(nights)' : `(${unit})`}
+                            {item.stayDiscount ? 'Nights' : `Quantity (${unit})`}
                           </label>
                           <input
                             id={`pos-quantity-${item.id}`}
@@ -448,6 +496,48 @@ export const PosView: React.FC<PosViewProps> = ({ students, equipment, onCreateC
                           />
                         </div>
                       </div>
+                      {item.category === 'accommodation' && (
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label htmlFor={`pos-check-in-${item.id}`} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Check-in *</label>
+                            <input
+                              id={`pos-check-in-${item.id}`}
+                              type="date"
+                              required
+                              value={item.check_in_date || ''}
+                              onChange={(event) => {
+                                const checkInDate = event.target.value;
+                                const nights = countStayNights(checkInDate, item.check_out_date);
+                                updateLine(item.id, {
+                                  check_in_date: checkInDate,
+                                  ...(nights > 0 ? { quantity: nights } : {}),
+                                });
+                              }}
+                              className="min-h-10 w-full rounded-lg border border-[#E2E8F0] bg-white px-2 text-sm text-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#4C8BF5] dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                            />
+                          </div>
+                          <div>
+                            <label htmlFor={`pos-check-out-${item.id}`} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Check-out *</label>
+                            <input
+                              id={`pos-check-out-${item.id}`}
+                              type="date"
+                              required
+                              min={item.check_in_date}
+                              value={item.check_out_date || ''}
+                              onChange={(event) => {
+                                const checkOutDate = event.target.value;
+                                const nights = countStayNights(item.check_in_date, checkOutDate);
+                                updateLine(item.id, {
+                                  check_out_date: checkOutDate,
+                                  ...(nights > 0 ? { quantity: nights } : {}),
+                                });
+                              }}
+                              className="min-h-10 w-full rounded-lg border border-[#E2E8F0] bg-white px-2 text-sm text-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#4C8BF5] dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                            />
+                          </div>
+                          <p className="col-span-2 text-xs text-slate-600 dark:text-slate-400">Nights are calculated from the check-in and check-out dates.</p>
+                        </div>
+                      )}
                       {item.tier && item.quantity >= item.tier.minimumQuantity && (
                         <p className="text-xs font-medium text-emerald-700 dark:text-emerald-300">
                           Group rate applied: {currency} {item.tier.unitPrice} per person.
@@ -463,6 +553,39 @@ export const PosView: React.FC<PosViewProps> = ({ students, equipment, onCreateC
                       <p className="text-right text-sm font-semibold text-slate-700 dark:text-slate-200">
                         Line total: {formatMoney(lineTotal, currency)}
                       </p>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label htmlFor={`pos-beneficiary-${item.id}`} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">
+                            Beneficiary *
+                          </label>
+                          <select
+                            id={`pos-beneficiary-${item.id}`}
+                            required
+                            value={item.beneficiary_student_id}
+                            onChange={(event) => updateLine(item.id, { beneficiary_student_id: event.target.value })}
+                            className="min-h-10 w-full rounded-lg border border-[#E2E8F0] bg-white px-2 text-sm text-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#4C8BF5] dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                          >
+                            {students.map((student) => (
+                              <option key={student.id} value={student.id}>{student.first_name} {student.last_name}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label htmlFor={`pos-allocation-${item.id}`} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">
+                            Deposit allocated ({currency}) *
+                          </label>
+                          <input
+                            id={`pos-allocation-${item.id}`}
+                            type="number"
+                            min="0"
+                            max={lineTotal}
+                            step="0.01"
+                            value={item.deposit_allocation || ''}
+                            onChange={(event) => updateLine(item.id, { deposit_allocation: Number(event.target.value) || 0 })}
+                            className="min-h-10 w-full rounded-lg border border-[#E2E8F0] bg-white px-2 text-sm text-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#4C8BF5] dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                          />
+                        </div>
+                      </div>
                     </li>
                   );
                 })}
@@ -519,7 +642,10 @@ export const PosView: React.FC<PosViewProps> = ({ students, equipment, onCreateC
             <div className="grid gap-3 sm:grid-cols-2">
               <div>
                 <label htmlFor="pos-deposit" className="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">Amount — min. {formatMoney(minimumDeposit, currency)} *</label>
-                <input id="pos-deposit" type="number" min={minimumDeposit || 0.01} max={total} step="0.01" required value={deposit} onChange={(event) => setDeposit(event.target.value)} className="min-h-11 w-full rounded-lg border border-[#E2E8F0] bg-white px-3 text-sm text-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#4C8BF5] dark:border-slate-700 dark:bg-slate-900 dark:text-white" />
+                <input id="pos-deposit" type="number" min={minimumDeposit || 0.01} max={total} step="0.01" required value={deposit}                 onChange={(event) => {
+                  setDeposit(event.target.value);
+                  if (cart.length === 1) updateLine(cart[0].id, { deposit_allocation: Number(event.target.value) || 0 });
+                }} className="min-h-11 w-full rounded-lg border border-[#E2E8F0] bg-white px-3 text-sm text-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#4C8BF5] dark:border-slate-700 dark:bg-slate-900 dark:text-white" />
               </div>
               <div>
                 <label htmlFor="pos-method" className="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">Payment method *</label>

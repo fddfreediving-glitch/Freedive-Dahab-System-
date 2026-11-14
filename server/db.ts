@@ -242,6 +242,8 @@ export function initializeDatabase() {
       quantity REAL NOT NULL DEFAULT 1,
       unit_price REAL NOT NULL DEFAULT 0,
       total_price REAL NOT NULL DEFAULT 0,
+      check_in_date TEXT,
+      check_out_date TEXT,
       FOREIGN KEY(invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
     );
 
@@ -252,6 +254,7 @@ export function initializeDatabase() {
       amount REAL NOT NULL,
       currency TEXT NOT NULL DEFAULT 'EUR',
       payment_method TEXT NOT NULL DEFAULT 'Cash EUR', -- 'Cash EUR', 'Cash EGP', 'Credit Card', 'Bank Transfer', 'InstaPay Egypt'
+      payment_account TEXT,
       payment_date TEXT NOT NULL,
       reference_number TEXT,
       notes TEXT,
@@ -281,6 +284,8 @@ export function initializeDatabase() {
       vendor_name TEXT NOT NULL,
       amount REAL NOT NULL,
       currency TEXT NOT NULL DEFAULT 'EGP',
+      payment_method TEXT,
+      payment_account TEXT,
       expense_date TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'approved', -- 'pending_approval', 'approved', 'paid', 'rejected'
       approved_by TEXT,
@@ -289,6 +294,73 @@ export function initializeDatabase() {
       created_by TEXT,
       created_at TEXT NOT NULL,
       FOREIGN KEY(approved_by) REFERENCES users(id) ON DELETE SET NULL
+    );
+
+    -- Payment service/beneficiary snapshots survive edits to invoice line items.
+    CREATE TABLE IF NOT EXISTS payment_allocations (
+      id TEXT PRIMARY KEY,
+      payment_id TEXT NOT NULL,
+      invoice_item_id TEXT,
+      service_label TEXT NOT NULL,
+      service_category TEXT NOT NULL,
+      beneficiary_student_id TEXT,
+      amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(payment_id) REFERENCES payments(id) ON DELETE RESTRICT,
+      FOREIGN KEY(invoice_item_id) REFERENCES invoice_items(id) ON DELETE SET NULL,
+      FOREIGN KEY(beneficiary_student_id) REFERENCES students(id) ON DELETE SET NULL
+    );
+
+    -- Corrections are appended to the receipt they adjust; they are never overwritten.
+    CREATE TABLE IF NOT EXISTS payment_adjustments (
+      id TEXT PRIMARY KEY,
+      payment_id TEXT NOT NULL,
+      adjustment_type TEXT NOT NULL CHECK (adjustment_type IN ('refund', 'reversal', 'correction')),
+      direction TEXT NOT NULL CHECK (direction IN ('debit', 'credit')),
+      amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+      adjustment_date TEXT NOT NULL,
+      payment_method TEXT NOT NULL,
+      payment_account TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      reference_number TEXT,
+      recorded_by TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(payment_id) REFERENCES payments(id) ON DELETE RESTRICT,
+      FOREIGN KEY(recorded_by) REFERENCES users(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS payment_adjustment_allocations (
+      id TEXT PRIMARY KEY,
+      adjustment_id TEXT NOT NULL,
+      payment_allocation_id TEXT,
+      invoice_item_id TEXT,
+      service_label TEXT NOT NULL,
+      service_category TEXT NOT NULL,
+      beneficiary_student_id TEXT,
+      amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(adjustment_id) REFERENCES payment_adjustments(id) ON DELETE RESTRICT,
+      FOREIGN KEY(payment_allocation_id) REFERENCES payment_allocations(id) ON DELETE SET NULL,
+      FOREIGN KEY(invoice_item_id) REFERENCES invoice_items(id) ON DELETE SET NULL,
+      FOREIGN KEY(beneficiary_student_id) REFERENCES students(id) ON DELETE SET NULL
+    );
+
+    -- Transfers and exchanges are balance movements, not revenue or expense rows.
+    CREATE TABLE IF NOT EXISTS finance_account_movements (
+      id TEXT PRIMARY KEY,
+      movement_type TEXT NOT NULL CHECK (movement_type IN ('transfer', 'exchange')),
+      from_account TEXT NOT NULL,
+      from_currency TEXT NOT NULL,
+      from_amount_cents INTEGER NOT NULL CHECK (from_amount_cents > 0),
+      to_account TEXT NOT NULL,
+      to_currency TEXT NOT NULL,
+      to_amount_cents INTEGER NOT NULL CHECK (to_amount_cents > 0),
+      movement_date TEXT NOT NULL,
+      reference_number TEXT,
+      notes TEXT,
+      recorded_by TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(recorded_by) REFERENCES users(id) ON DELETE SET NULL
     );
 
     -- Payroll Periods
@@ -380,12 +452,80 @@ export function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_payroll_period ON payroll_records(period_id);
     CREATE INDEX IF NOT EXISTS idx_equipment_cat ON equipment(category);
     CREATE INDEX IF NOT EXISTS idx_customer_requests_created ON customer_requests(created_at);
+    CREATE INDEX IF NOT EXISTS idx_payment_allocations_payment ON payment_allocations(payment_id);
+    CREATE INDEX IF NOT EXISTS idx_payment_adjustments_payment ON payment_adjustments(payment_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_payment_adjustment_allocations_adjustment ON payment_adjustment_allocations(adjustment_id);
+    CREATE INDEX IF NOT EXISTS idx_finance_movements_date ON finance_account_movements(movement_date, movement_type);
+
+    CREATE TRIGGER IF NOT EXISTS payment_allocations_no_update
+    BEFORE UPDATE ON payment_allocations
+    WHEN NEW.id IS NOT OLD.id OR NEW.payment_id IS NOT OLD.payment_id OR
+      (NEW.invoice_item_id IS NOT OLD.invoice_item_id AND NEW.invoice_item_id IS NOT NULL) OR
+      (NEW.beneficiary_student_id IS NOT OLD.beneficiary_student_id AND NEW.beneficiary_student_id IS NOT NULL) OR
+      NEW.service_label IS NOT OLD.service_label OR NEW.service_category IS NOT OLD.service_category OR
+      NEW.amount_cents IS NOT OLD.amount_cents OR NEW.created_at IS NOT OLD.created_at BEGIN
+      SELECT RAISE(ABORT, 'payment allocations are append-only');
+    END;
+    CREATE TRIGGER IF NOT EXISTS payment_allocations_no_delete
+    BEFORE DELETE ON payment_allocations BEGIN
+      SELECT RAISE(ABORT, 'payment allocations are append-only');
+    END;
+    CREATE TRIGGER IF NOT EXISTS payment_adjustment_allocations_no_update
+    BEFORE UPDATE ON payment_adjustment_allocations
+    WHEN NEW.id IS NOT OLD.id OR NEW.adjustment_id IS NOT OLD.adjustment_id OR
+      (NEW.payment_allocation_id IS NOT OLD.payment_allocation_id AND NEW.payment_allocation_id IS NOT NULL) OR
+      (NEW.invoice_item_id IS NOT OLD.invoice_item_id AND NEW.invoice_item_id IS NOT NULL) OR
+      (NEW.beneficiary_student_id IS NOT OLD.beneficiary_student_id AND NEW.beneficiary_student_id IS NOT NULL) OR
+      NEW.service_label IS NOT OLD.service_label OR NEW.service_category IS NOT OLD.service_category OR
+      NEW.amount_cents IS NOT OLD.amount_cents OR NEW.created_at IS NOT OLD.created_at BEGIN
+      SELECT RAISE(ABORT, 'payment adjustment allocations are append-only');
+    END;
+    CREATE TRIGGER IF NOT EXISTS payment_adjustment_allocations_no_delete
+    BEFORE DELETE ON payment_adjustment_allocations BEGIN
+      SELECT RAISE(ABORT, 'payment adjustment allocations are append-only');
+    END;
+    CREATE TRIGGER IF NOT EXISTS payment_adjustments_no_update
+    BEFORE UPDATE ON payment_adjustments BEGIN
+      SELECT RAISE(ABORT, 'payment adjustments are append-only');
+    END;
+    CREATE TRIGGER IF NOT EXISTS payment_adjustments_no_delete
+    BEFORE DELETE ON payment_adjustments BEGIN
+      SELECT RAISE(ABORT, 'payment adjustments are append-only');
+    END;
+    CREATE TRIGGER IF NOT EXISTS finance_movements_no_update
+    BEFORE UPDATE ON finance_account_movements BEGIN
+      SELECT RAISE(ABORT, 'account movements are append-only');
+    END;
+    CREATE TRIGGER IF NOT EXISTS finance_movements_no_delete
+    BEFORE DELETE ON finance_account_movements BEGIN
+      SELECT RAISE(ABORT, 'account movements are append-only');
+    END;
   `);
+
+  const paymentColumns = db.pragma('table_info(payments)') as Array<{ name: string }>;
+  if (!paymentColumns.some((column) => column.name === 'payment_account')) {
+    db.exec('ALTER TABLE payments ADD COLUMN payment_account TEXT');
+  }
+
+  const expenseColumns = db.pragma('table_info(expenses)') as Array<{ name: string }>;
+  if (!expenseColumns.some((column) => column.name === 'payment_method')) {
+    db.exec('ALTER TABLE expenses ADD COLUMN payment_method TEXT');
+  }
+  if (!expenseColumns.some((column) => column.name === 'payment_account')) {
+    db.exec('ALTER TABLE expenses ADD COLUMN payment_account TEXT');
+  }
 
   const invoiceItemColumns = db.pragma('table_info(invoice_items)') as Array<{ name: string }>;
   if (!invoiceItemColumns.some((column) => column.name === 'category')) {
     db.exec("ALTER TABLE invoice_items ADD COLUMN category TEXT NOT NULL DEFAULT 'other'");
   }
+  if (!invoiceItemColumns.some((column) => column.name === 'check_in_date')) {
+    db.exec('ALTER TABLE invoice_items ADD COLUMN check_in_date TEXT');
+  }
+  if (!invoiceItemColumns.some((column) => column.name === 'check_out_date')) {
+    db.exec('ALTER TABLE invoice_items ADD COLUMN check_out_date TEXT');
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_invoice_items_stay_dates ON invoice_items(category, check_in_date, check_out_date)');
 
   const studentColumns = db.pragma('table_info(students)') as Array<{ name: string }>;
   if (!studentColumns.some((column) => column.name === 'medical_clearance_status')) {
@@ -407,4 +547,54 @@ export function initializeDatabase() {
 
   db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)')
     .run('booking_safety_rules', JSON.stringify(DEFAULT_BOOKING_SAFETY_RULES));
+
+  db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)')
+    .run('finance_categories', JSON.stringify({
+      expense: [
+        'Taxi driving', 'Safe-cash-safe', 'Laundry', 'Room cleaning', 'Blue folder',
+        'Internet/phone', 'Taxi shopping', 'DC maintenance/renewal',
+        'EQ maintenance/renewal', 'Water tank', 'Water bottles', 'Water card',
+        'Airport taxi', 'Electricity', 'Desert dinner excursion', 'Ras Mohammed excursion',
+        'Cleaning supplies', 'Stationery', 'Salary', 'SSI kits', 'Company documents/legal fees', 'Other',
+        'Oxygen & Safety Gas', 'Boat Charter & Captain', 'Equipment Maintenance', 'Dive Site Entry Fees',
+      ],
+      billing: ['Bill customer', 'Course', 'Package', 'Accommodation', 'Activity', 'Workshop', 'Training session', 'Gear rental', 'Shop product', 'Other'],
+      income: ['FDD Income Receipt'],
+    }));
+
+  const categoryMigration = db.prepare("SELECT value FROM settings WHERE key = 'finance_categories_migration_v1'").get();
+  if (!categoryMigration) {
+    const storedCategories = db.prepare("SELECT value FROM settings WHERE key = 'finance_categories'").get() as { value: string } | undefined;
+    if (storedCategories) {
+      try {
+        const categories = JSON.parse(storedCategories.value) as { expense?: unknown; billing?: unknown; income?: unknown };
+        if (Array.isArray(categories.expense) && Array.isArray(categories.billing) && Array.isArray(categories.income)) {
+          const expense = [...categories.expense] as string[];
+          const billing = [...categories.billing] as string[];
+          const normalizeCategory = (category: string) => {
+            const normalized = category.trim().toLowerCase().replace(/[\s_-]+/g, ' ');
+            return normalized === 'training' ? 'training session' : normalized === 'shop' ? 'shop product' : normalized;
+          };
+          if (!billing.some((category) => normalizeCategory(category) === 'bill customer')) {
+            billing.unshift('Bill customer');
+          }
+          const usedExpenses = db.prepare('SELECT DISTINCT category FROM expenses').all() as Array<{ category: string }>;
+          const usedBilling = db.prepare('SELECT DISTINCT category FROM invoice_items').all() as Array<{ category: string }>;
+          for (const { category } of usedExpenses) {
+            if (!expense.includes(category)) expense.push(category);
+          }
+          for (const { category } of usedBilling) {
+            if (!billing.some((configured) => normalizeCategory(configured) === normalizeCategory(category))) {
+              billing.push(category);
+            }
+          }
+          db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)')
+            .run('finance_categories', JSON.stringify({ ...categories, expense, billing }));
+          db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('finance_categories_migration_v1', '1');
+        }
+      } catch {
+        // Keep invalid settings visible to the finance API rather than masking them.
+      }
+    }
+  }
 }

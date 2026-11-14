@@ -160,6 +160,9 @@ export interface InvoiceItem {
   quantity: number;
   unit_price: number;
   total_price: number;
+  remaining_amount?: number;
+  check_in_date?: string | null;
+  check_out_date?: string | null;
 }
 
 export interface InvoiceUpdateInput {
@@ -172,20 +175,64 @@ export interface InvoiceUpdateInput {
     description: string;
     quantity: number;
     unit_price: number;
+    check_in_date?: string;
+    check_out_date?: string;
   }>;
+}
+
+export interface AccommodationStay {
+  id: string;
+  description: string;
+  check_in_date: string;
+  check_out_date: string;
+  student_id: string;
+  first_name: string;
+  last_name: string;
+  invoice_number: string;
 }
 
 export interface FinanceOpeningBalances {
   EUR: number;
   USD: number;
   EGP: number;
+  GBP: number;
 }
 
 export interface FinanceCashSummary {
   opening_balances: FinanceOpeningBalances;
   income_by_currency: FinanceOpeningBalances;
   expenses_by_currency: FinanceOpeningBalances;
+  adjustments_by_currency?: FinanceOpeningBalances;
+  movement_net_by_currency?: FinanceOpeningBalances;
+  income_by_method_account?: Array<{ payment_method: string; payment_account: string; currency: string; total: number }>;
+  expenses_by_method_account?: Array<{ payment_method: string; payment_account: string; currency: string; total: number }>;
   current_balances: FinanceOpeningBalances;
+}
+
+export interface FinanceAccountMovement {
+  id: string;
+  movement_type: 'transfer' | 'exchange';
+  from_account: string;
+  from_currency: string;
+  from_amount_cents: number;
+  to_account: string;
+  to_currency: string;
+  to_amount_cents: number;
+  movement_date: string;
+  reference_number?: string;
+  notes?: string;
+  recorded_by_name?: string;
+}
+
+export interface FinanceAccountBalance {
+  account: string;
+  currency: string;
+  opening_balance: number;
+  income: number;
+  adjustments: number;
+  expenses: number;
+  transfers: number;
+  current_balance: number;
 }
 
 export interface CustomerRequestItemInput {
@@ -195,6 +242,8 @@ export interface CustomerRequestItemInput {
   unit_price: number;
   equipment_id?: string;
   expected_return?: string;
+  check_in_date?: string;
+  check_out_date?: string;
 }
 
 export interface CustomerRequest extends Invoice {
@@ -212,19 +261,56 @@ export interface CustomerRequestInput {
   initial_payment: {
     amount: number;
     payment_method: string;
+    payment_account: string;
     payment_date: string;
     reference_number: string;
     notes: string;
+    allocations: Array<{
+      item_index: number;
+      beneficiary_student_id: string;
+      amount: number;
+    }>;
   };
 }
 
 export interface PaymentInput {
   amount: number;
   currency: string;
+  customer_id: string;
   payment_method: string;
+  payment_account: string;
   payment_date: string;
   reference_number: string;
   notes: string;
+  allocations: Array<{
+    item_id: string;
+    beneficiary_student_id: string;
+    amount: number;
+  }>;
+}
+
+export interface PaymentAdjustment {
+  id: string;
+  payment_id: string;
+  adjustment_type: 'refund' | 'reversal' | 'correction';
+  direction: 'debit' | 'credit';
+  amount_cents: number;
+  adjustment_date: string;
+  payment_method: string;
+  payment_account: string;
+  reason: string;
+  reference_number?: string;
+  recorded_by_name?: string;
+  allocations?: Array<{
+    payment_allocation_id?: string | null;
+    invoice_item_id?: string | null;
+    beneficiary_student_id?: string | null;
+    service_label: string;
+    service_category: string;
+    beneficiary_first_name?: string;
+    beneficiary_last_name?: string;
+    amount_cents: number;
+  }>;
 }
 
 export interface Payment {
@@ -233,9 +319,23 @@ export interface Payment {
   amount: number;
   currency: string;
   payment_method: string;
+  payment_account?: string;
   payment_date: string;
   reference_number?: string;
   notes?: string;
+  recorded_by_name?: string;
+  net_amount?: number;
+  allocations?: Array<{
+    id: string;
+    invoice_item_id?: string | null;
+    beneficiary_student_id?: string | null;
+    service_label: string;
+    service_category: string;
+    beneficiary_first_name?: string;
+    beneficiary_last_name?: string;
+    amount_cents: number;
+  }>;
+  adjustments?: PaymentAdjustment[];
 }
 
 export interface Invoice {
@@ -269,11 +369,14 @@ export interface Expense {
   vendor_name: string;
   amount: number;
   currency: string;
+  payment_method?: string;
+  payment_account?: string;
   expense_date: string;
   status: 'pending_approval' | 'approved' | 'paid' | 'rejected';
   approved_by_name?: string;
   description: string;
   receipt_ref?: string;
+  created_by_name?: string;
 }
 
 export interface PayrollPeriod {

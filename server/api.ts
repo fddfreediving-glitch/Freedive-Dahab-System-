@@ -1537,9 +1537,12 @@ apiRouter.post('/activities/:id/participants', requireAuth, (req: Request, res: 
 // ==========================================
 
 const customerRequestRoles: Array<'owner' | 'finance' | 'front_desk_crm'> = ['owner', 'finance', 'front_desk_crm'];
+const plannerAccommodationRoles: Array<'owner' | 'finance' | 'front_desk_crm' | 'operations_manager'> = [
+  'owner', 'finance', 'front_desk_crm', 'operations_manager',
+];
 const customerRequestCategories = new Set(['course', 'package', 'accommodation', 'activity', 'workshop', 'training', 'gear_rental', 'shop', 'other']);
-const billingCurrencies = new Set(['EUR', 'EGP', 'USD']);
-const paymentMethods = new Set(['Cash EUR', 'Cash EGP', 'Cash USD', 'Credit Card', 'Bank Transfer', 'InstaPay Egypt']);
+const billingCurrencies = new Set(['EUR', 'EGP', 'USD', 'GBP']);
+const paymentMethods = new Set(['Cash EUR', 'Cash EGP', 'Cash USD', 'Cash GBP', 'Credit Card', 'Bank Transfer', 'InstaPay Egypt']);
 
 function isValidDate(value: unknown): value is string {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -1551,6 +1554,248 @@ function isValidCashMethod(method: unknown, currency: string): boolean {
   return typeof method === 'string' &&
     paymentMethods.has(method) &&
     (!method.startsWith('Cash ') || method === `Cash ${currency}`);
+}
+
+type PaymentAllocationInput = {
+  item_id?: unknown;
+  item_index?: unknown;
+  beneficiary_student_id?: unknown;
+  amount?: unknown;
+};
+
+type ResolvedPaymentAllocation = {
+  itemId: string;
+  serviceLabel: string;
+  serviceCategory: string;
+  beneficiaryStudentId: string;
+  amountCents: number;
+};
+
+type PaymentAllocationItem = {
+  id: string;
+  description: string;
+  category: string;
+  capacityCents: number;
+  usedCents: number;
+};
+
+function getInvoicePaymentItems(invoiceId: string): PaymentAllocationItem[] {
+  const invoice = db.prepare('SELECT total_amount FROM invoices WHERE id = ?').get(invoiceId) as { total_amount: number } | undefined;
+  if (!invoice) return [];
+  const items = db.prepare(`
+    SELECT id, description, category, ROUND(total_price * 100) AS line_cents
+    FROM invoice_items WHERE invoice_id = ?
+  `).all(invoiceId) as Array<{ id: string; description: string; category: string; line_cents: number }>;
+  if (!items.length) return [];
+
+  const weightTotal = items.reduce((sum, item) => sum + item.line_cents, 0);
+  const totalCents = Math.round(invoice.total_amount * 100);
+  const capacities = items.map((item) => {
+    const raw = weightTotal > 0 ? totalCents * item.line_cents / weightTotal : totalCents / items.length;
+    return { id: item.id, capacity: Math.floor(raw), remainder: raw - Math.floor(raw) };
+  });
+  let unassignedCents = totalCents - capacities.reduce((sum, item) => sum + item.capacity, 0);
+  for (const capacity of [...capacities].sort((a, b) => b.remainder - a.remainder || a.id.localeCompare(b.id))) {
+    if (unassignedCents <= 0) break;
+    capacity.capacity += 1;
+    unassignedCents -= 1;
+  }
+
+  const grossUsage = db.prepare(`
+    SELECT pa.invoice_item_id, SUM(pa.amount_cents) AS amount_cents
+    FROM payment_allocations pa
+    JOIN payments p ON p.id = pa.payment_id
+    WHERE p.invoice_id = ? AND pa.invoice_item_id IS NOT NULL
+    GROUP BY pa.invoice_item_id
+  `).all(invoiceId) as Array<{ invoice_item_id: string; amount_cents: number }>;
+  const adjustmentUsage = db.prepare(`
+    SELECT COALESCE(paa.invoice_item_id, original.invoice_item_id) AS invoice_item_id,
+           SUM(CASE WHEN pa.direction = 'debit' THEN -paa.amount_cents ELSE paa.amount_cents END) AS amount_cents
+    FROM payment_adjustment_allocations paa
+    JOIN payment_adjustments pa ON pa.id = paa.adjustment_id
+    LEFT JOIN payment_allocations original ON original.id = paa.payment_allocation_id
+    JOIN payments p ON p.id = pa.payment_id
+    WHERE p.invoice_id = ? AND COALESCE(paa.invoice_item_id, original.invoice_item_id) IS NOT NULL
+    GROUP BY COALESCE(paa.invoice_item_id, original.invoice_item_id)
+  `).all(invoiceId) as Array<{ invoice_item_id: string; amount_cents: number }>;
+  const usedByItem = new Map<string, number>();
+  for (const row of grossUsage) usedByItem.set(row.invoice_item_id, row.amount_cents);
+  for (const row of adjustmentUsage) {
+    usedByItem.set(row.invoice_item_id, (usedByItem.get(row.invoice_item_id) || 0) + row.amount_cents);
+  }
+  return items.map((item) => ({
+    id: item.id,
+    description: item.description,
+    category: item.category,
+    capacityCents: capacities.find((capacity) => capacity.id === item.id)?.capacity || 0,
+    usedCents: usedByItem.get(item.id) || 0,
+  }));
+}
+
+function normalizePaymentAllocations(
+  input: unknown,
+  items: PaymentAllocationItem[],
+  expectedCents: number,
+  defaultBeneficiaryId?: string,
+): ResolvedPaymentAllocation[] | string {
+  if (!Array.isArray(input) || input.length === 0 || input.length > 30) {
+    return 'Allocate the payment to at least one invoice service';
+  }
+  const seen = new Set<string>();
+  const allocations: ResolvedPaymentAllocation[] = [];
+  const requestedByItem = new Map<string, number>();
+  let totalCents = 0;
+  for (const raw of input as PaymentAllocationInput[]) {
+    const item = typeof raw.item_id === 'string'
+      ? items.find((candidate) => candidate.id === raw.item_id)
+      : Number.isInteger(raw.item_index)
+        ? items[Number(raw.item_index)]
+        : undefined;
+    const beneficiaryStudentId = typeof raw.beneficiary_student_id === 'string'
+      ? raw.beneficiary_student_id
+      : defaultBeneficiaryId;
+    const amount = Number(raw.amount);
+    const amountCents = Math.round(amount * 100);
+    if (!item || !beneficiaryStudentId || !Number.isFinite(amount) || amountCents <= 0 ||
+      Math.abs(amount * 100 - amountCents) > 0.00001) {
+      return 'Each allocation needs a valid service, beneficiary, and amount';
+    }
+    const key = `${item.id}:${beneficiaryStudentId}`;
+    if (seen.has(key)) return 'Combine duplicate service and beneficiary allocations';
+    seen.add(key);
+    if (!db.prepare('SELECT 1 FROM students WHERE id = ?').get(beneficiaryStudentId)) {
+      return 'Allocation beneficiary not found';
+    }
+    allocations.push({
+      itemId: item.id,
+      serviceLabel: item.description,
+      serviceCategory: item.category,
+      beneficiaryStudentId,
+      amountCents,
+    });
+    requestedByItem.set(item.id, (requestedByItem.get(item.id) || 0) + amountCents);
+    totalCents += amountCents;
+  }
+  if (totalCents !== expectedCents) return 'Service allocations must equal the payment amount exactly';
+  for (const item of items) {
+    const requested = requestedByItem.get(item.id) || 0;
+    if (requested > 0 && item.usedCents + requested > item.capacityCents) {
+      return `Allocation exceeds the remaining amount for ${item.description}`;
+    }
+  }
+  return allocations;
+}
+
+function insertPaymentAllocations(paymentId: string, allocations: ResolvedPaymentAllocation[], createdAt: string): void {
+  const insert = db.prepare(`
+    INSERT INTO payment_allocations (
+      id, payment_id, invoice_item_id, service_label, service_category,
+      beneficiary_student_id, amount_cents, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const allocation of allocations) {
+    insert.run(
+      `palloc_${crypto.randomUUID()}`,
+      paymentId,
+      allocation.itemId,
+      allocation.serviceLabel,
+      allocation.serviceCategory,
+      allocation.beneficiaryStudentId,
+      allocation.amountCents,
+      createdAt,
+    );
+  }
+}
+
+type FinanceCategories = { expense: string[]; billing: string[]; income: string[] };
+
+function getFinanceCategories(): FinanceCategories | null {
+  const stored = db.prepare("SELECT value FROM settings WHERE key = 'finance_categories'").get() as { value: string } | undefined;
+  if (!stored) return null;
+  try {
+    const parsed: unknown = JSON.parse(stored.value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const categories = parsed as Record<string, unknown>;
+    if (!['expense', 'billing', 'income'].every((key) =>
+      Array.isArray(categories[key]) &&
+      (categories[key] as unknown[]).every((item) => typeof item === 'string' && item.trim().length > 0),
+    )) return null;
+    return {
+      expense: [...categories.expense as string[]],
+      billing: [...categories.billing as string[]],
+      income: [...categories.income as string[]],
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isValidFinanceAccount(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 100;
+}
+
+function enrichPayments(payments: any[]): any[] {
+  if (payments.length === 0) return [];
+  const paymentIds = payments.map((payment) => payment.id);
+  const placeholders = paymentIds.map(() => '?').join(', ');
+  const allocations = db.prepare(`
+    SELECT pa.*, s.first_name AS beneficiary_first_name, s.last_name AS beneficiary_last_name
+    FROM payment_allocations pa
+    LEFT JOIN students s ON s.id = pa.beneficiary_student_id
+    WHERE pa.payment_id IN (${placeholders})
+    ORDER BY pa.created_at, pa.id
+  `).all(...paymentIds) as any[];
+  const adjustments = db.prepare(`
+    SELECT pa.*, u.full_name AS recorded_by_name
+    FROM payment_adjustments pa
+    LEFT JOIN users u ON u.id = pa.recorded_by
+    WHERE pa.payment_id IN (${placeholders})
+    ORDER BY pa.adjustment_date, pa.created_at
+  `).all(...paymentIds) as any[];
+  const adjustmentIds = adjustments.map((adjustment) => adjustment.id);
+  const adjustmentAllocations = adjustmentIds.length
+    ? db.prepare(`
+        SELECT paa.*, s.first_name AS beneficiary_first_name, s.last_name AS beneficiary_last_name
+        FROM payment_adjustment_allocations paa
+        LEFT JOIN students s ON s.id = paa.beneficiary_student_id
+        WHERE paa.adjustment_id IN (${adjustmentIds.map(() => '?').join(', ')})
+        ORDER BY paa.created_at, paa.id
+      `).all(...adjustmentIds) as any[]
+    : [];
+  const adjustmentAllocationsById = new Map<string, any[]>();
+  for (const allocation of adjustmentAllocations) {
+    const list = adjustmentAllocationsById.get(allocation.adjustment_id) || [];
+    list.push(allocation);
+    adjustmentAllocationsById.set(allocation.adjustment_id, list);
+  }
+  const allocationsByPayment = new Map<string, any[]>();
+  const adjustmentsByPayment = new Map<string, any[]>();
+  for (const allocation of allocations) {
+    const list = allocationsByPayment.get(allocation.payment_id) || [];
+    list.push(allocation);
+    allocationsByPayment.set(allocation.payment_id, list);
+  }
+  for (const adjustment of adjustments) {
+    const list = adjustmentsByPayment.get(adjustment.payment_id) || [];
+    list.push(adjustment);
+    adjustmentsByPayment.set(adjustment.payment_id, list);
+  }
+  return payments.map((payment) => {
+    const paymentAdjustments = (adjustmentsByPayment.get(payment.id) || []).map((adjustment) => ({
+      ...adjustment,
+      allocations: adjustmentAllocationsById.get(adjustment.id) || [],
+    }));
+    const netCents = Math.round(payment.amount * 100) + paymentAdjustments.reduce(
+      (total, adjustment) => total + (adjustment.direction === 'credit' ? adjustment.amount_cents : -adjustment.amount_cents),
+      0,
+    );
+    return {
+      ...payment,
+      allocations: allocationsByPayment.get(payment.id) || [],
+      adjustments: paymentAdjustments,
+      net_amount: netCents / 100,
+    };
+  });
 }
 
 apiRouter.get('/customer-requests', requireAuth, requireRole(customerRequestRoles), (req: Request, res: Response): void => {
@@ -1573,29 +1818,49 @@ apiRouter.get('/customer-requests', requireAuth, requireRole(customerRequestRole
   const placeholders = invoiceIds.map(() => '?').join(', ');
   const items = db.prepare(`SELECT * FROM invoice_items WHERE invoice_id IN (${placeholders})`).all(...invoiceIds) as any[];
   const payments = db.prepare(`
-    SELECT * FROM payments
-    WHERE invoice_id IN (${placeholders})
-    ORDER BY payment_date DESC, created_at DESC
+    SELECT p.*, u.full_name AS recorded_by_name
+    FROM payments p
+    LEFT JOIN users u ON u.id = p.recorded_by
+    WHERE p.invoice_id IN (${placeholders})
+    ORDER BY p.payment_date DESC, p.created_at DESC
   `).all(...invoiceIds) as any[];
   const itemsByInvoice = new Map<string, any[]>();
-  const paymentsByInvoice = new Map<string, any[]>();
 
   for (const item of items) {
     const invoiceItems = itemsByInvoice.get(item.invoice_id) || [];
     invoiceItems.push(item);
     itemsByInvoice.set(item.invoice_id, invoiceItems);
   }
-  for (const payment of payments) {
-    const invoicePayments = paymentsByInvoice.get(payment.invoice_id) || [];
+  const enrichedPayments = enrichPayments(payments);
+  const enrichedPaymentsByInvoice = new Map<string, any[]>();
+  for (const payment of enrichedPayments) {
+    const invoicePayments = enrichedPaymentsByInvoice.get(payment.invoice_id) || [];
     invoicePayments.push(payment);
-    paymentsByInvoice.set(payment.invoice_id, invoicePayments);
+    enrichedPaymentsByInvoice.set(payment.invoice_id, invoicePayments);
   }
 
   res.json(requests.map((request) => ({
     ...request,
     items: itemsByInvoice.get(request.id) || [],
-    payments: paymentsByInvoice.get(request.id) || [],
+    payments: enrichedPaymentsByInvoice.get(request.id) || [],
   })));
+});
+
+apiRouter.get('/planner/accommodation-stays', requireAuth, requireRole(plannerAccommodationRoles), (_req: Request, res: Response): void => {
+  const stays = db.prepare(`
+    SELECT ii.id, ii.description, ii.check_in_date, ii.check_out_date,
+           s.id AS student_id, s.first_name, s.last_name, inv.invoice_number
+    FROM invoice_items ii
+    JOIN invoices inv ON inv.id = ii.invoice_id
+    JOIN students s ON s.id = inv.student_id
+    WHERE ii.category = 'accommodation'
+      AND ii.check_in_date IS NOT NULL
+      AND ii.check_out_date IS NOT NULL
+      AND inv.status != 'cancelled'
+    ORDER BY ii.check_in_date, ii.check_out_date, ii.id
+    LIMIT 500
+  `).all();
+  res.json(stays);
 });
 
 apiRouter.post('/customer-requests', requireAuth, requireRole(customerRequestRoles), (req: Request, res: Response): void => {
@@ -1613,7 +1878,7 @@ apiRouter.post('/customer-requests', requireAuth, requireRole(customerRequestRol
     return;
   }
   if (!billingCurrencies.has(currency)) {
-    res.status(400).json({ error: 'Currency must be EUR, EGP, or USD' });
+    res.status(400).json({ error: 'Currency must be EUR, EGP, USD, or GBP' });
     return;
   }
   if (!isValidDate(due_date)) {
@@ -1632,8 +1897,10 @@ apiRouter.post('/customer-requests', requireAuth, requireRole(customerRequestRol
     res.status(400).json({ error: 'A deposit is required to record a customer request' });
     return;
   }
-  if (!isValidCashMethod(initial_payment.payment_method, currency) || !isValidDate(initial_payment.payment_date)) {
-    res.status(400).json({ error: 'Choose a valid payment method and date' });
+  if (!isValidCashMethod(initial_payment.payment_method, currency) ||
+      !isValidDate(initial_payment.payment_date) ||
+      !isValidFinanceAccount(initial_payment.payment_account)) {
+    res.status(400).json({ error: 'Choose a valid payment method, account, and date' });
     return;
   }
   if (
@@ -1667,6 +1934,8 @@ apiRouter.post('/customer-requests', requireAuth, requireRole(customerRequestRol
     equipmentId?: string;
     expectedReturn?: string;
     conditionOut?: string;
+    checkInDate?: string;
+    checkOutDate?: string;
   }> = [];
   let totalCents = 0;
   for (const item of items) {
@@ -1686,6 +1955,20 @@ apiRouter.post('/customer-requests', requireAuth, requireRole(customerRequestRol
       unitPrice > 10_000_000
     ) {
       res.status(400).json({ error: 'Each item needs a valid category, description, quantity, and unit price' });
+      return;
+    }
+
+    let checkInDate: string | undefined;
+    let checkOutDate: string | undefined;
+    if (category === 'accommodation') {
+      if (!isValidDate(item.check_in_date) || !isValidDate(item.check_out_date) || item.check_out_date <= item.check_in_date) {
+        res.status(400).json({ error: 'Accommodation items require valid check-in and check-out dates, with check-out after check-in' });
+        return;
+      }
+      checkInDate = item.check_in_date;
+      checkOutDate = item.check_out_date;
+    } else if (item.check_in_date !== undefined || item.check_out_date !== undefined) {
+      res.status(400).json({ error: 'Check-in and check-out dates are only valid for accommodation items' });
       return;
     }
 
@@ -1745,6 +2028,8 @@ apiRouter.post('/customer-requests', requireAuth, requireRole(customerRequestRol
       equipmentId,
       expectedReturn,
       conditionOut,
+      checkInDate,
+      checkOutDate,
     });
   }
 
@@ -1774,6 +2059,23 @@ apiRouter.post('/customer-requests', requireAuth, requireRole(customerRequestRol
 
   const now = new Date().toISOString();
   const invoiceId = `inv_${crypto.randomUUID()}`;
+  const allocationItems = normalizedItems.map((item, index) => ({
+    id: `item_${invoiceId}_${index}`,
+    description: item.description,
+    category: item.category,
+    capacityCents: Math.round(item.total * 100),
+    usedCents: 0,
+  }));
+  const initialAllocations = normalizePaymentAllocations(
+    initial_payment.allocations,
+    allocationItems,
+    depositCents,
+    student_id,
+  );
+  if (typeof initialAllocations === 'string') {
+    res.status(400).json({ error: initialAllocations });
+    return;
+  }
   const invoiceNumber = `INV-${now.slice(0, 4)}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   const requestId = `req_${crypto.randomUUID()}`;
   const requestNumber = `CR-${now.slice(0, 4)}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
@@ -1814,11 +2116,22 @@ apiRouter.post('/customer-requests', requireAuth, requireRole(customerRequestRol
     `).run(requestId, requestNumber, invoiceId, special_request?.trim() || null, req.user!.id, now, now);
 
     const insertItem = db.prepare(`
-      INSERT INTO invoice_items (id, invoice_id, category, description, quantity, unit_price, total_price)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO invoice_items (
+        id, invoice_id, category, description, quantity, unit_price, total_price, check_in_date, check_out_date
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     normalizedItems.forEach((item, index) => {
-      insertItem.run(`item_${invoiceId}_${index}`, invoiceId, item.category, item.description, item.quantity, item.unitPrice, item.total);
+      insertItem.run(
+        `item_${invoiceId}_${index}`,
+        invoiceId,
+        item.category,
+        item.description,
+        item.quantity,
+        item.unitPrice,
+        item.total,
+        item.checkInDate || null,
+        item.checkOutDate || null,
+      );
     });
 
     for (const item of normalizedItems) {
@@ -1857,21 +2170,23 @@ apiRouter.post('/customer-requests', requireAuth, requireRole(customerRequestRol
 
     db.prepare(`
       INSERT INTO payments (
-        id, invoice_id, amount, currency, payment_method, payment_date,
+        id, invoice_id, amount, currency, payment_method, payment_account, payment_date,
         reference_number, notes, recorded_by, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       paymentId,
       invoiceId,
       depositAmount,
       currency,
       initial_payment.payment_method,
+      initial_payment.payment_account.trim(),
       initial_payment.payment_date,
       initial_payment.reference_number?.trim() || null,
       initial_payment.notes?.trim() || null,
       req.user!.id,
       now,
     );
+    insertPaymentAllocations(paymentId, initialAllocations, now);
   });
 
   try {
@@ -1906,9 +2221,9 @@ apiRouter.post('/customer-requests', requireAuth, requireRole(customerRequestRol
 
 apiRouter.post('/customer-requests/:id/payments', requireAuth, requireRole(customerRequestRoles), (req: Request, res: Response): void => {
   const requestId = req.params.id;
-  const { amount, payment_method, payment_date, reference_number, notes } = req.body || {};
+  const { amount, payment_method, payment_account, payment_date, reference_number, notes, allocations } = req.body || {};
   const request = db.prepare(`
-    SELECT cr.id, cr.request_number, inv.id AS invoice_id, inv.currency,
+    SELECT cr.id, cr.request_number, inv.id AS invoice_id, inv.student_id, inv.currency,
            inv.total_amount, inv.paid_amount, inv.status
     FROM customer_requests cr
     JOIN invoices inv ON cr.invoice_id = inv.id
@@ -1919,8 +2234,10 @@ apiRouter.post('/customer-requests/:id/payments', requireAuth, requireRole(custo
     res.status(404).json({ error: 'Customer request not found' });
     return;
   }
-  if (!isValidCashMethod(payment_method, request.currency) || !isValidDate(payment_date)) {
-    res.status(400).json({ error: 'Choose a valid payment method and date' });
+  if (!isValidCashMethod(payment_method, request.currency) ||
+      !isValidFinanceAccount(payment_account) ||
+      !isValidDate(payment_date)) {
+    res.status(400).json({ error: 'Choose a valid payment method, account, and date' });
     return;
   }
   if (
@@ -1946,6 +2263,13 @@ apiRouter.post('/customer-requests/:id/payments', requireAuth, requireRole(custo
     return;
   }
 
+  const items = getInvoicePaymentItems(request.invoice_id);
+  const normalizedAllocations = normalizePaymentAllocations(allocations, items, paymentCents, request.student_id);
+  if (typeof normalizedAllocations === 'string') {
+    res.status(400).json({ error: normalizedAllocations });
+    return;
+  }
+
   const paymentId = `pmt_${crypto.randomUUID()}`;
   const now = new Date().toISOString();
   const newPaidAmount = (Math.round(request.paid_amount * 100) + paymentCents) / 100;
@@ -1953,21 +2277,23 @@ apiRouter.post('/customer-requests/:id/payments', requireAuth, requireRole(custo
   const recordPayment = db.transaction(() => {
     db.prepare(`
       INSERT INTO payments (
-        id, invoice_id, amount, currency, payment_method, payment_date,
+        id, invoice_id, amount, currency, payment_method, payment_account, payment_date,
         reference_number, notes, recorded_by, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       paymentId,
       request.invoice_id,
       paymentCents / 100,
       request.currency,
       payment_method,
+      payment_account.trim(),
       payment_date,
       reference_number?.trim() || null,
       notes?.trim() || null,
       req.user!.id,
       now,
     );
+    insertPaymentAllocations(paymentId, normalizedAllocations, now);
     db.prepare('UPDATE invoices SET paid_amount = ?, status = ?, updated_at = ? WHERE id = ?')
       .run(newPaidAmount, newStatus, now, request.invoice_id);
     db.prepare('UPDATE customer_requests SET updated_at = ? WHERE id = ?').run(now, requestId);
@@ -1981,7 +2307,7 @@ apiRouter.post('/customer-requests/:id/payments', requireAuth, requireRole(custo
     action: 'RECORD_CUSTOMER_REQUEST_PAYMENT',
     entityType: 'PAYMENT',
     entityId: paymentId,
-    details: { requestId, requestNumber: request.request_number, amount: paymentCents / 100, newPaidAmount, newStatus },
+    details: { requestId, requestNumber: request.request_number, amount: paymentCents / 100, payment_account, newPaidAmount, newStatus },
     ip: req.ip,
   });
 
@@ -2000,13 +2326,28 @@ apiRouter.get('/finance/invoices', requireAuth, requireRole(['owner', 'finance']
   `).all() as any[];
 
   const getItems = db.prepare('SELECT * FROM invoice_items WHERE invoice_id = ?');
-  const getPayments = db.prepare('SELECT * FROM payments WHERE invoice_id = ? ORDER BY payment_date DESC');
+  const getPayments = db.prepare(`
+    SELECT p.*, u.full_name AS recorded_by_name
+    FROM payments p
+    LEFT JOIN users u ON u.id = p.recorded_by
+    WHERE p.invoice_id = ?
+    ORDER BY p.payment_date DESC, p.created_at DESC
+  `);
 
-  const enriched = invoices.map(inv => ({
-    ...inv,
-    items: getItems.all(inv.id),
-    payments: getPayments.all(inv.id),
-  }));
+  const enriched = invoices.map((inv) => {
+    const allocationItems = new Map(getInvoicePaymentItems(inv.id).map((item) => [item.id, item]));
+    return {
+      ...inv,
+      items: (getItems.all(inv.id) as any[]).map((item) => {
+        const allocationItem = allocationItems.get(item.id);
+        return {
+          ...item,
+          remaining_amount: Math.max(0, ((allocationItem?.capacityCents || 0) - (allocationItem?.usedCents || 0)) / 100),
+        };
+      }),
+      payments: enrichPayments(getPayments.all(inv.id) as any[]),
+    };
+  });
 
   res.json(enriched);
 });
@@ -2046,7 +2387,15 @@ apiRouter.patch('/finance/invoices/:id', requireAuth, requireRole(['owner', 'fin
     return;
   }
 
-  const normalizedItems: Array<{ category: string; description: string; quantity: number; unitPrice: number; totalCents: number }> = [];
+  const normalizedItems: Array<{
+    category: string;
+    description: string;
+    quantity: number;
+    unitPrice: number;
+    totalCents: number;
+    checkInDate?: string;
+    checkOutDate?: string;
+  }> = [];
   let subtotalCents = 0;
   for (const item of items) {
     const category = item?.category;
@@ -2068,10 +2417,24 @@ apiRouter.patch('/finance/invoices/:id', requireAuth, requireRole(['owner', 'fin
       return;
     }
 
+    let checkInDate: string | undefined;
+    let checkOutDate: string | undefined;
+    if (category === 'accommodation') {
+      if (!isValidDate(item.check_in_date) || !isValidDate(item.check_out_date) || item.check_out_date <= item.check_in_date) {
+        res.status(400).json({ error: 'Accommodation items require valid check-in and check-out dates, with check-out after check-in' });
+        return;
+      }
+      checkInDate = item.check_in_date;
+      checkOutDate = item.check_out_date;
+    } else if (item.check_in_date !== undefined || item.check_out_date !== undefined) {
+      res.status(400).json({ error: 'Check-in and check-out dates are only valid for accommodation items' });
+      return;
+    }
+
     const roundedUnitPrice = Math.round(unitPrice * 100) / 100;
     const totalCents = Math.round(quantity * roundedUnitPrice * 100);
     subtotalCents += totalCents;
-    normalizedItems.push({ category, description, quantity, unitPrice: roundedUnitPrice, totalCents });
+    normalizedItems.push({ category, description, quantity, unitPrice: roundedUnitPrice, totalCents, checkInDate, checkOutDate });
   }
 
   const taxCents = Math.round(subtotalCents * tax_rate / 100);
@@ -2098,8 +2461,9 @@ apiRouter.patch('/finance/invoices/:id', requireAuth, requireRole(['owner', 'fin
 
     db.prepare('DELETE FROM invoice_items WHERE invoice_id = ?').run(id);
     const insertItem = db.prepare(`
-      INSERT INTO invoice_items (id, invoice_id, category, description, quantity, unit_price, total_price)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO invoice_items (
+        id, invoice_id, category, description, quantity, unit_price, total_price, check_in_date, check_out_date
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     normalizedItems.forEach((item, index) => {
       insertItem.run(
@@ -2110,6 +2474,8 @@ apiRouter.patch('/finance/invoices/:id', requireAuth, requireRole(['owner', 'fin
         item.quantity,
         item.unitPrice,
         item.totalCents / 100,
+        item.checkInDate || null,
+        item.checkOutDate || null,
       );
     });
     db.prepare('UPDATE customer_requests SET special_request = ?, updated_at = ? WHERE invoice_id = ?')
@@ -2142,7 +2508,7 @@ apiRouter.post('/finance/invoices', requireAuth, requireRole(['owner', 'finance'
     return;
   }
   if (!billingCurrencies.has(currency || 'EUR')) {
-    res.status(400).json({ error: 'Currency must be EUR, EGP, or USD' });
+    res.status(400).json({ error: 'Currency must be EUR, EGP, USD, or GBP' });
     return;
   }
   if (typeof tax_rate !== 'undefined' && (!Number.isFinite(Number(tax_rate)) || Number(tax_rate) < 0 || Number(tax_rate) > 100)) {
@@ -2160,7 +2526,13 @@ apiRouter.post('/finance/invoices', requireAuth, requireRole(['owner', 'finance'
     Number(item.quantity) > 1000 ||
     !Number.isFinite(Number(item.unit_price)) ||
     Number(item.unit_price) <= 0 ||
-    Number(item.unit_price) > 10_000_000
+    Number(item.unit_price) > 10_000_000 ||
+    (item.category === 'accommodation' && (
+      !isValidDate(item.check_in_date) ||
+      !isValidDate(item.check_out_date) ||
+      item.check_out_date <= item.check_in_date
+    )) ||
+    (item.category !== 'accommodation' && (item.check_in_date !== undefined || item.check_out_date !== undefined))
   )) {
     res.status(400).json({ error: 'Each service needs a valid category, description, quantity, and unit price' });
     return;
@@ -2204,15 +2576,26 @@ apiRouter.post('/finance/invoices', requireAuth, requireRole(['owner', 'finance'
   );
 
   const insertItem = db.prepare(`
-    INSERT INTO invoice_items (id, invoice_id, category, description, quantity, unit_price, total_price)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO invoice_items (
+      id, invoice_id, category, description, quantity, unit_price, total_price, check_in_date, check_out_date
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     const qty = Number(item.quantity);
     const unitPrice = Number(item.unit_price);
-    insertItem.run(`item_${id}_${i}`, id, item.category || 'other', item.description.trim(), qty, unitPrice, qty * unitPrice);
+    insertItem.run(
+      `item_${id}_${i}`,
+      id,
+      item.category || 'other',
+      item.description.trim(),
+      qty,
+      unitPrice,
+      qty * unitPrice,
+      item.check_in_date || null,
+      item.check_out_date || null,
+    );
   }
 
   logAudit({
@@ -2231,7 +2614,7 @@ apiRouter.post('/finance/invoices', requireAuth, requireRole(['owner', 'finance'
 
 apiRouter.post('/finance/invoices/:id/payments', requireAuth, requireRole(['owner', 'finance']), (req: Request, res: Response): void => {
   const { id } = req.params;
-  const { amount, currency, payment_method, payment_date, reference_number, notes } = req.body;
+  const { amount, customer_id, payment_account, payment_method, payment_date, reference_number, notes, allocations } = req.body || {};
 
   const invoice = db.prepare('SELECT * FROM invoices WHERE id = ?').get(id) as any;
   if (!invoice) {
@@ -2239,49 +2622,60 @@ apiRouter.post('/finance/invoices/:id/payments', requireAuth, requireRole(['owne
     return;
   }
 
-  const pmtAmount = Number(amount);
-  if (!pmtAmount || pmtAmount <= 0) {
-    res.status(400).json({ error: 'Valid payment amount is required' });
+  if (customer_id !== invoice.student_id) {
+    res.status(400).json({ error: 'Select the customer linked to this invoice' });
+    return;
+  }
+  if (!isValidCashMethod(payment_method, invoice.currency) ||
+      !isValidFinanceAccount(payment_account) ||
+      !isValidDate(payment_date) ||
+      (typeof reference_number !== 'undefined' && typeof reference_number !== 'string') ||
+      (typeof notes !== 'undefined' && typeof notes !== 'string') ||
+      (reference_number || '').length > 100 ||
+      (notes || '').length > 500) {
+    res.status(400).json({ error: 'Enter a valid payment method, account, date, reference, and notes' });
+    return;
+  }
+  const paymentCents = Math.round(Number(amount) * 100);
+  const currentPaidCents = Math.round(Number(invoice.paid_amount) * 100);
+  const totalCents = Math.round(Number(invoice.total_amount) * 100);
+  if (!Number.isFinite(paymentCents) || paymentCents <= 0 || paymentCents > totalCents - currentPaidCents) {
+    res.status(400).json({ error: 'Payment must be greater than zero and no more than the outstanding balance' });
+    return;
+  }
+  if (!billingCurrencies.has(invoice.currency)) {
+    res.status(409).json({ error: 'The invoice currency is not supported for payments' });
+    return;
+  }
+  const items = getInvoicePaymentItems(id);
+  const normalizedAllocations = normalizePaymentAllocations(allocations, items, paymentCents, invoice.student_id);
+  if (typeof normalizedAllocations === 'string') {
+    res.status(400).json({ error: normalizedAllocations });
     return;
   }
 
-  const paymentId = 'pmt_' + crypto.randomUUID().slice(0, 10);
+  const paymentId = `pmt_${crypto.randomUUID()}`;
   const now = new Date().toISOString();
-
-  db.prepare(`
-    INSERT INTO payments (id, invoice_id, amount, currency, payment_method, payment_date, reference_number, notes, recorded_by, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    paymentId,
-    id,
-    pmtAmount,
-    currency || invoice.currency,
-    payment_method || 'Cash EUR',
-    payment_date || now.slice(0, 10),
-    reference_number || null,
-    notes || null,
-    req.user!.id,
-    now
-  );
-
-  const newPaidAmount = invoice.paid_amount + pmtAmount;
-  let newStatus = invoice.status;
-  if (newPaidAmount >= invoice.total_amount) {
-    newStatus = 'paid';
-  } else if (newPaidAmount > 0) {
-    newStatus = 'partially_paid';
-  }
-
-  db.prepare(`
-    UPDATE invoices
-    SET paid_amount = ?, status = ?, updated_at = ?
-    WHERE id = ?
-  `).run(newPaidAmount, newStatus, now, id);
-
-  // If this invoice is tied to a booking, keep booking payment_status synchronized!
-  if (invoice.booking_id) {
-    db.prepare('UPDATE bookings SET payment_status = ? WHERE id = ?').run(newStatus, invoice.booking_id);
-  }
+  const newPaidAmount = (currentPaidCents + paymentCents) / 100;
+  const newStatus = newPaidAmount >= invoice.total_amount ? 'paid' : 'partially_paid';
+  const recordPayment = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO payments (
+        id, invoice_id, amount, currency, payment_method, payment_account, payment_date,
+        reference_number, notes, recorded_by, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      paymentId, id, paymentCents / 100, invoice.currency, payment_method, payment_account.trim(),
+      payment_date, reference_number?.trim() || null, notes?.trim() || null, req.user!.id, now,
+    );
+    insertPaymentAllocations(paymentId, normalizedAllocations, now);
+    db.prepare('UPDATE invoices SET paid_amount = ?, status = ?, updated_at = ? WHERE id = ?')
+      .run(newPaidAmount, newStatus, now, id);
+    if (invoice.booking_id) {
+      db.prepare('UPDATE bookings SET payment_status = ? WHERE id = ?').run(newStatus, invoice.booking_id);
+    }
+  });
+  recordPayment();
 
   logAudit({
     userId: req.user!.id,
@@ -2290,47 +2684,350 @@ apiRouter.post('/finance/invoices/:id/payments', requireAuth, requireRole(['owne
     action: 'RECORD_PAYMENT',
     entityType: 'PAYMENT',
     entityId: paymentId,
-    details: { invoiceId: id, amount: pmtAmount, payment_method, newPaidAmount, newStatus },
+    details: { invoiceId: id, amount: paymentCents / 100, payment_method, payment_account, newPaidAmount, newStatus },
     ip: req.ip,
   });
 
   res.status(201).json({ paymentId, newPaidAmount, status: newStatus, message: 'Payment recorded in ledger' });
 });
 
+apiRouter.post('/finance/payments/:id/adjustments', requireAuth, requireRole(['owner', 'finance']), (req: Request, res: Response): void => {
+  const paymentId = req.params.id;
+  const { adjustment_type, direction, amount, adjustment_date, payment_method, payment_account, reason, reference_number, allocations } = req.body || {};
+  const payment = db.prepare(`
+    SELECT p.*, inv.id AS invoice_id, inv.student_id, inv.total_amount, inv.booking_id
+    FROM payments p
+    JOIN invoices inv ON inv.id = p.invoice_id
+    WHERE p.id = ?
+  `).get(paymentId) as any;
+  if (!payment) {
+    res.status(404).json({ error: 'Payment not found' });
+    return;
+  }
+  if (!['refund', 'reversal', 'correction'].includes(adjustment_type) ||
+      !['debit', 'credit'].includes(direction) ||
+      (adjustment_type !== 'correction' && direction !== 'debit')) {
+    res.status(400).json({ error: 'Choose a valid refund, reversal, or correction direction' });
+    return;
+  }
+  if (!isValidDate(adjustment_date) ||
+      !isValidCashMethod(payment_method, payment.currency) ||
+      !isValidFinanceAccount(payment_account) ||
+      typeof reason !== 'string' || !reason.trim() || reason.trim().length > 500 ||
+      (typeof reference_number !== 'undefined' && (typeof reference_number !== 'string' || reference_number.length > 100))) {
+    res.status(400).json({ error: 'Adjustment date, payment account, method, and reason are required' });
+    return;
+  }
+  const amountCents = Math.round(Number(amount) * 100);
+  if (!Number.isFinite(amountCents) || amountCents <= 0 ||
+      Math.abs(Number(amount) * 100 - amountCents) > 0.00001) {
+    res.status(400).json({ error: 'Adjustment amount must be a positive amount in cents' });
+    return;
+  }
+
+  if (!Array.isArray(allocations) || allocations.length === 0 || allocations.length > 30) {
+    res.status(400).json({ error: 'Allocate the adjustment to at least one service' });
+    return;
+  }
+  const invoiceItems = getInvoicePaymentItems(payment.invoice_id);
+  const invoiceItemById = new Map(invoiceItems.map((item) => [item.id, item]));
+  const originalAllocations = db.prepare(`
+    SELECT id, invoice_item_id, service_label, service_category, beneficiary_student_id, amount_cents
+    FROM payment_allocations WHERE payment_id = ?
+  `).all(paymentId) as Array<{
+    id: string;
+    invoice_item_id: string | null;
+    service_label: string;
+    service_category: string;
+    beneficiary_student_id: string | null;
+    amount_cents: number;
+  }>;
+  const normalizedAdjustmentAllocations: Array<{
+    paymentAllocationId: string | null;
+    itemId: string | null;
+    serviceLabel: string;
+    serviceCategory: string;
+    beneficiaryStudentId: string | null;
+    amountCents: number;
+  }> = [];
+  const usedAdjustmentAllocationKeys = new Set<string>();
+  const proposedCreditsByItem = new Map<string, number>();
+  let allocatedCents = 0;
+  for (const raw of allocations as Array<Record<string, unknown>>) {
+    const rowCents = Math.round(Number(raw.amount) * 100);
+    if (!Number.isFinite(rowCents) || rowCents <= 0 ||
+        Math.abs(Number(raw.amount) * 100 - rowCents) > 0.00001) {
+      res.status(400).json({ error: 'Each adjustment allocation needs a positive amount in cents' });
+      return;
+    }
+    let originalAllocation: typeof originalAllocations[number] | undefined;
+    let item: PaymentAllocationItem | undefined;
+    if (typeof raw.payment_allocation_id === 'string') {
+      originalAllocation = originalAllocations.find((allocation) => allocation.id === raw.payment_allocation_id);
+      if (!originalAllocation) {
+        res.status(400).json({ error: 'Adjustment allocation does not belong to this payment' });
+        return;
+      }
+      item = originalAllocation.invoice_item_id ? invoiceItemById.get(originalAllocation.invoice_item_id) : undefined;
+      if (direction === 'debit') {
+        const alreadyAdjusted = db.prepare(`
+          SELECT COALESCE(SUM(paa.amount_cents), 0) AS total
+          FROM payment_adjustment_allocations paa
+          JOIN payment_adjustments pa ON pa.id = paa.adjustment_id
+          WHERE paa.payment_allocation_id = ? AND pa.direction = 'debit'
+        `).get(originalAllocation.id) as { total: number };
+        if (rowCents > originalAllocation.amount_cents - alreadyAdjusted.total) {
+          res.status(409).json({ error: `Adjustment exceeds the unadjusted allocation for ${originalAllocation.service_label}` });
+          return;
+        }
+      }
+    } else if (typeof raw.item_id === 'string') {
+      item = invoiceItemById.get(raw.item_id);
+      if (!item) {
+        res.status(400).json({ error: 'Adjustment service does not belong to this invoice' });
+        return;
+      }
+    }
+    const serviceLabel = originalAllocation?.service_label || item?.description;
+    const serviceCategory = originalAllocation?.service_category || item?.category;
+    const beneficiaryStudentId = originalAllocation?.beneficiary_student_id ||
+      (typeof raw.beneficiary_student_id === 'string' ? raw.beneficiary_student_id : payment.student_id);
+    if (!serviceLabel || !serviceCategory || !beneficiaryStudentId ||
+        !db.prepare('SELECT 1 FROM students WHERE id = ?').get(beneficiaryStudentId)) {
+      res.status(400).json({ error: 'Choose a valid beneficiary and service for each adjustment allocation' });
+      return;
+    }
+    const allocationKey = `${originalAllocation?.id || item?.id}:${beneficiaryStudentId || ''}`;
+    if (usedAdjustmentAllocationKeys.has(allocationKey)) {
+      res.status(400).json({ error: 'Combine duplicate service and beneficiary adjustment allocations' });
+      return;
+    }
+    usedAdjustmentAllocationKeys.add(allocationKey);
+    if (direction === 'credit' && item) {
+      proposedCreditsByItem.set(item.id, (proposedCreditsByItem.get(item.id) || 0) + rowCents);
+    }
+    normalizedAdjustmentAllocations.push({
+      paymentAllocationId: originalAllocation?.id || null,
+      itemId: originalAllocation?.invoice_item_id || item?.id || null,
+      serviceLabel,
+      serviceCategory,
+      beneficiaryStudentId,
+      amountCents: rowCents,
+    });
+    allocatedCents += rowCents;
+  }
+  if (allocatedCents !== amountCents) {
+    res.status(400).json({ error: 'Service adjustment allocations must equal the adjustment amount exactly' });
+    return;
+  }
+  if (direction === 'credit') {
+    for (const [itemId, creditCents] of proposedCreditsByItem) {
+      const item = invoiceItemById.get(itemId)!;
+      if (item.usedCents + creditCents > item.capacityCents) {
+        res.status(409).json({ error: `Adjustment exceeds the remaining amount for ${item.description}` });
+        return;
+      }
+    }
+  }
+
+  const adjustmentSums = db.prepare(`
+    SELECT
+      COALESCE(SUM(CASE WHEN direction = 'debit' THEN amount_cents ELSE 0 END), 0) AS debits,
+      COALESCE(SUM(CASE WHEN direction = 'credit' THEN amount_cents ELSE 0 END), 0) AS credits
+    FROM payment_adjustments WHERE payment_id = ?
+  `).get(paymentId) as { debits: number; credits: number };
+  const refundableCents = Math.round(payment.amount * 100) - adjustmentSums.debits;
+  if (direction === 'debit' && amountCents > refundableCents) {
+    res.status(409).json({ error: 'Adjustment exceeds the unrefunded amount of this payment' });
+    return;
+  }
+  if (adjustment_type === 'reversal' && (direction !== 'debit' || amountCents !== refundableCents)) {
+    res.status(409).json({ error: 'A reversal must reverse the full remaining payment amount' });
+    return;
+  }
+
+  const invoicePaid = db.prepare(`
+    SELECT
+      COALESCE((SELECT SUM(ROUND(amount * 100)) FROM payments WHERE invoice_id = ?), 0)
+      + COALESCE((SELECT SUM(CASE WHEN direction = 'credit' THEN amount_cents ELSE -amount_cents END)
+                  FROM payment_adjustments pa JOIN payments p ON p.id = pa.payment_id
+                  WHERE p.invoice_id = ?), 0) AS paid_cents
+  `).get(payment.invoice_id, payment.invoice_id) as { paid_cents: number };
+  const nextInvoicePaidCents = invoicePaid.paid_cents + (direction === 'credit' ? amountCents : -amountCents);
+  if (nextInvoicePaidCents < 0 || nextInvoicePaidCents > Math.round(payment.total_amount * 100)) {
+    res.status(409).json({ error: 'Adjustment would put the invoice paid amount outside its valid balance' });
+    return;
+  }
+
+  const id = `padj_${crypto.randomUUID()}`;
+  const createdAt = new Date().toISOString();
+  const paidAmount = nextInvoicePaidCents / 100;
+  const nextStatus = paidAmount === 0 ? 'issued' : paidAmount >= payment.total_amount ? 'paid' : 'partially_paid';
+  const saveAdjustment = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO payment_adjustments (
+        id, payment_id, adjustment_type, direction, amount_cents, adjustment_date,
+        payment_method, payment_account, reason, reference_number, recorded_by, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id, paymentId, adjustment_type, direction, amountCents, adjustment_date,
+      payment_method, payment_account.trim(), reason.trim(), reference_number?.trim() || null,
+      req.user!.id, createdAt,
+    );
+    const insertAllocation = db.prepare(`
+      INSERT INTO payment_adjustment_allocations (
+        id, adjustment_id, payment_allocation_id, invoice_item_id,
+        service_label, service_category, beneficiary_student_id, amount_cents, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const allocation of normalizedAdjustmentAllocations) {
+      insertAllocation.run(
+        `padjalloc_${crypto.randomUUID()}`, id, allocation.paymentAllocationId, allocation.itemId,
+        allocation.serviceLabel, allocation.serviceCategory, allocation.beneficiaryStudentId,
+        allocation.amountCents, createdAt,
+      );
+    }
+    db.prepare('UPDATE invoices SET paid_amount = ?, status = ?, updated_at = ? WHERE id = ?')
+      .run(paidAmount, nextStatus, createdAt, payment.invoice_id);
+    if (payment.booking_id) {
+      const bookingStatus = paidAmount === 0 && direction === 'debit' && adjustment_type !== 'correction'
+        ? 'refunded'
+        : paidAmount === 0 ? 'unpaid' : nextStatus;
+      db.prepare('UPDATE bookings SET payment_status = ? WHERE id = ?').run(bookingStatus, payment.booking_id);
+    }
+  });
+  saveAdjustment();
+
+  logAudit({
+    userId: req.user!.id,
+    userEmail: req.user!.email,
+    userRole: req.user!.role,
+    action: 'ADJUST_PAYMENT',
+    entityType: 'PAYMENT_ADJUSTMENT',
+    entityId: id,
+    details: { paymentId, adjustment_type, direction, amount: amountCents / 100, reason: reason.trim() },
+    ip: req.ip,
+  });
+  res.status(201).json({ id, paymentId, paidAmount, status: nextStatus, message: 'Payment adjustment recorded' });
+});
+
+apiRouter.get('/finance/categories', requireAuth, requireRole(['owner', 'finance']), (_req: Request, res: Response): void => {
+  const categories = getFinanceCategories();
+  if (!categories) {
+    res.status(503).json({ error: 'Finance category settings are invalid and need correction' });
+    return;
+  }
+  res.json(categories);
+});
+
+apiRouter.put('/finance/categories', requireAuth, requireRole(['owner', 'finance']), (req: Request, res: Response): void => {
+  const next = req.body as Partial<FinanceCategories> | undefined;
+  if (!next || !['expense', 'billing', 'income'].every((key) => {
+    const values = next[key as keyof FinanceCategories];
+    return Array.isArray(values) && values.length > 0 && values.length <= 60 &&
+      values.every((value) => typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 80) &&
+      new Set(values.map((value) => value.trim().toLowerCase())).size === values.length;
+  })) {
+    res.status(400).json({ error: 'Provide unique, non-empty expense, billing, and income category lists' });
+    return;
+  }
+  const categories: FinanceCategories = {
+    expense: next.expense!.map((value) => value.trim()),
+    billing: next.billing!.map((value) => value.trim()),
+    income: next.income!.map((value) => value.trim()),
+  };
+  if (categories.expense.some((category) => ['bill customer', 'fdd income receipt'].includes(category.toLowerCase()))) {
+    res.status(400).json({ error: 'Billing actions and income receipts cannot be classified as expenses' });
+    return;
+  }
+  if (categories.billing.some((category) => category.toLowerCase() === 'fdd income receipt') ||
+      categories.income.some((category) => category.toLowerCase() === 'bill customer')) {
+    res.status(400).json({ error: 'Customer billing actions and income receipts must remain in their corresponding transaction types' });
+    return;
+  }
+  const usedExpenses = db.prepare('SELECT DISTINCT category FROM expenses').all() as Array<{ category: string }>;
+  const usedBilling = db.prepare('SELECT DISTINCT category FROM invoice_items').all() as Array<{ category: string }>;
+  const normalizeCategory = (category: string) => {
+    const normalized = category.trim().toLowerCase().replace(/[\s_-]+/g, ' ');
+    return normalized === 'training' ? 'training session' : normalized === 'shop' ? 'shop product' : normalized;
+  };
+  if (usedExpenses.some(({ category }) => !categories.expense.includes(category)) ||
+      usedBilling.some(({ category }) => !categories.billing.some((configured) =>
+        normalizeCategory(configured) === normalizeCategory(category)))) {
+    res.status(409).json({ error: 'Existing transaction categories must remain in the configured lists' });
+    return;
+  }
+  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)')
+    .run('finance_categories', JSON.stringify(categories));
+  logAudit({
+    userId: req.user!.id,
+    userEmail: req.user!.email,
+    userRole: req.user!.role,
+    action: 'UPDATE_FINANCE_CATEGORIES',
+    entityType: 'SETTINGS',
+    details: { expense: categories.expense.length, billing: categories.billing.length, income: categories.income.length },
+    ip: req.ip,
+  });
+  res.json(categories);
+});
+
 apiRouter.get('/finance/expenses', requireAuth, requireRole(['owner', 'finance']), (req: Request, res: Response): void => {
   const expenses = db.prepare(`
-    SELECT e.*, u.full_name as approved_by_name
+    SELECT e.*, u.full_name as approved_by_name, c.full_name AS created_by_name
     FROM expenses e
     LEFT JOIN users u ON e.approved_by = u.id
+    LEFT JOIN users c ON e.created_by = c.id
     ORDER BY e.expense_date DESC
   `).all();
   res.json(expenses);
 });
 
 apiRouter.post('/finance/expenses', requireAuth, requireRole(['owner', 'finance']), (req: Request, res: Response): void => {
-  const { category, vendor_name, amount, currency, expense_date, description, receipt_ref } = req.body;
-  if (!category || !vendor_name || !amount || !description) {
-    res.status(400).json({ error: 'Category, vendor name, amount, and description are required' });
+  const { category, vendor_name, amount, currency, payment_method, payment_account, expense_date, description, receipt_ref } = req.body || {};
+  const categories = getFinanceCategories();
+  const amountValue = Number(amount);
+  if (!categories) {
+    res.status(503).json({ error: 'Finance category settings are invalid and need correction' });
+    return;
+  }
+  if (typeof vendor_name !== 'string' || !vendor_name.trim() || vendor_name.length > 200 ||
+      typeof description !== 'string' || !description.trim() || description.length > 1000 ||
+      !categories.expense.includes(category) ||
+      !billingCurrencies.has(currency) ||
+      !isValidCashMethod(payment_method, currency) ||
+      !isValidFinanceAccount(payment_account) ||
+      !isValidDate(expense_date) ||
+      !Number.isFinite(amountValue) || amountValue <= 0 || amountValue > 1_000_000_000 ||
+      (typeof receipt_ref !== 'undefined' && (typeof receipt_ref !== 'string' || receipt_ref.length > 100))) {
+    res.status(400).json({ error: 'Enter a valid expense category, supplier, amount, currency, date, payment method, and account' });
     return;
   }
 
-  const id = 'exp_' + crypto.randomUUID().slice(0, 10);
-  const expenseNumber = 'EXP-' + new Date().getFullYear() + '-' + Math.floor(100 + Math.random() * 900);
+  const amountCents = Math.round(amountValue * 100);
+  if (Math.abs(amountValue * 100 - amountCents) > 0.00001 ||
+      category.trim().toLowerCase() === 'exchange') {
+    res.status(400).json({ error: 'Exchange transactions must be recorded as account movements, not expenses; amounts must be in cents' });
+    return;
+  }
+  const id = `exp_${crypto.randomUUID()}`;
+  const expenseNumber = `EXP-${new Date().getFullYear()}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   const now = new Date().toISOString();
 
   db.prepare(`
     INSERT INTO expenses (
-      id, expense_number, category, vendor_name, amount, currency,
+      id, expense_number, category, vendor_name, amount, currency, payment_method, payment_account,
       expense_date, status, approved_by, description, receipt_ref, created_by, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?)
   `).run(
     id,
     expenseNumber,
     category,
     vendor_name,
-    Number(amount),
-    currency || 'EGP',
-    expense_date || now.slice(0, 10),
+    amountCents / 100,
+    currency,
+    payment_method,
+    payment_account.trim(),
+    expense_date,
     req.user!.id,
     description,
     receipt_ref || null,
@@ -2345,32 +3042,216 @@ apiRouter.post('/finance/expenses', requireAuth, requireRole(['owner', 'finance'
     action: 'RECORD_EXPENSE',
     entityType: 'EXPENSE',
     entityId: id,
-    details: { expenseNumber, category, vendor_name, amount, currency: currency || 'EGP' },
+    details: { expenseNumber, category, vendor_name, amount: amountCents / 100, currency, payment_method, payment_account },
     ip: req.ip,
   });
 
   res.status(201).json({ id, expenseNumber, message: 'Expense recorded' });
 });
 
-const financeCurrencies = ['EUR', 'USD', 'EGP'] as const;
+const financeCurrencies = ['EUR', 'USD', 'EGP', 'GBP'] as const;
 type FinanceCurrency = (typeof financeCurrencies)[number];
 type FinanceOpeningBalances = Record<FinanceCurrency, number>;
 
+apiRouter.get('/finance/account-movements', requireAuth, requireRole(['owner', 'finance']), (req: Request, res: Response): void => {
+  const { from_date, to_date, movement_type, currency, account, staff } = req.query;
+  if ((from_date && !isValidDate(from_date)) || (to_date && !isValidDate(to_date)) ||
+      (movement_type && !['transfer', 'exchange'].includes(String(movement_type))) ||
+      (currency && !billingCurrencies.has(String(currency)))) {
+    res.status(400).json({ error: 'Invalid account-movement filters' });
+    return;
+  }
+  const rows = db.prepare(`
+    SELECT m.*, u.full_name AS recorded_by_name
+    FROM finance_account_movements m
+    LEFT JOIN users u ON u.id = m.recorded_by
+    WHERE (? IS NULL OR m.movement_date >= ?)
+      AND (? IS NULL OR m.movement_date <= ?)
+      AND (? IS NULL OR m.movement_type = ?)
+      AND (? IS NULL OR m.from_currency = ? OR m.to_currency = ?)
+      AND (? IS NULL OR m.from_account LIKE ? OR m.to_account LIKE ?)
+      AND (? IS NULL OR u.full_name LIKE ?)
+    ORDER BY m.movement_date DESC, m.created_at DESC
+    LIMIT 500
+  `).all(
+    from_date || null, from_date || null,
+    to_date || null, to_date || null,
+    movement_type || null, movement_type || null,
+    currency || null, currency || null, currency || null,
+    account || null, account ? `%${account}%` : null, account ? `%${account}%` : null,
+    staff || null, staff ? `%${staff}%` : null,
+  );
+  res.json(rows);
+});
+
+apiRouter.post('/finance/account-movements', requireAuth, requireRole(['owner', 'finance']), (req: Request, res: Response): void => {
+  const {
+    movement_type, from_account, from_currency, from_amount,
+    to_account, to_currency, to_amount, movement_date, reference_number, notes,
+  } = req.body || {};
+  const fromCents = Math.round(Number(from_amount) * 100);
+  const toCents = Math.round(Number(to_amount) * 100);
+  if (!['transfer', 'exchange'].includes(movement_type) ||
+      !isValidFinanceAccount(from_account) || !isValidFinanceAccount(to_account) ||
+      from_account.trim() === to_account.trim() ||
+      !billingCurrencies.has(from_currency) || !billingCurrencies.has(to_currency) ||
+      !isValidDate(movement_date) ||
+      !Number.isFinite(fromCents) || fromCents <= 0 ||
+      !Number.isFinite(toCents) || toCents <= 0 ||
+      (movement_type === 'transfer' && (from_currency !== to_currency || fromCents !== toCents)) ||
+      (movement_type === 'exchange' && from_currency === to_currency) ||
+      (typeof reference_number !== 'undefined' && (typeof reference_number !== 'string' || reference_number.length > 100)) ||
+      (typeof notes !== 'undefined' && (typeof notes !== 'string' || notes.length > 500))) {
+    res.status(400).json({ error: 'Transfers require matching currency and amounts; exchanges require different currencies and valid accounts' });
+    return;
+  }
+  const id = `move_${crypto.randomUUID()}`;
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO finance_account_movements (
+      id, movement_type, from_account, from_currency, from_amount_cents,
+      to_account, to_currency, to_amount_cents, movement_date, reference_number,
+      notes, recorded_by, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id, movement_type, from_account.trim(), from_currency, fromCents,
+    to_account.trim(), to_currency, toCents, movement_date, reference_number?.trim() || null,
+    notes?.trim() || null, req.user!.id, now,
+  );
+  logAudit({
+    userId: req.user!.id,
+    userEmail: req.user!.email,
+    userRole: req.user!.role,
+    action: 'RECORD_FINANCE_MOVEMENT',
+    entityType: 'FINANCE_ACCOUNT_MOVEMENT',
+    entityId: id,
+    details: { movement_type, from_account, from_currency, fromAmount: fromCents / 100, to_account, to_currency, toAmount: toCents / 100 },
+    ip: req.ip,
+  });
+  res.status(201).json({ id, movement_type, message: 'Account movement recorded; it is excluded from income and expenses' });
+});
+
+apiRouter.get('/finance/account-balances', requireAuth, requireRole(['owner', 'finance']), (_req: Request, res: Response): void => {
+  const stored = db.prepare("SELECT value FROM settings WHERE key = 'finance_account_opening_balances'").get() as { value: string } | undefined;
+  let openingRows: Array<{ account: string; currency: string; amount: number }> = [];
+  if (stored) {
+    try {
+      const parsed: unknown = JSON.parse(stored.value);
+      if (!Array.isArray(parsed) || parsed.some((row) =>
+        !row || typeof row.account !== 'string' || !billingCurrencies.has(row.currency) ||
+        typeof row.amount !== 'number' || !Number.isFinite(row.amount) || row.amount < 0,
+      )) throw new Error('Invalid saved account balances');
+      openingRows = parsed;
+    } catch {
+      res.status(503).json({ error: 'Saved account opening balances are invalid and need correction' });
+      return;
+    }
+  }
+  const totals = new Map<string, {
+    account: string; currency: string; opening_balance: number;
+    income: number; adjustments: number; expenses: number; transfers: number;
+  }>();
+  const ensure = (account: string, currency: string) => {
+    const key = `${currency}\u0000${account}`;
+    if (!totals.has(key)) totals.set(key, {
+      account, currency, opening_balance: 0, income: 0, adjustments: 0, expenses: 0, transfers: 0,
+    });
+    return totals.get(key)!;
+  };
+  for (const row of openingRows) ensure(row.account, row.currency).opening_balance = row.amount;
+  const incomeRows = db.prepare(`
+    SELECT payment_account AS account, currency, SUM(ROUND(amount * 100)) AS cents
+    FROM payments
+    WHERE payment_account IS NOT NULL AND payment_account != ''
+    GROUP BY payment_account, currency
+  `).all() as Array<{ account: string; currency: string; cents: number }>;
+  const adjustmentRows = db.prepare(`
+    SELECT pa.payment_account AS account, p.currency,
+           SUM(CASE WHEN pa.direction = 'debit' THEN pa.amount_cents ELSE -pa.amount_cents END) AS cents
+    FROM payment_adjustments pa JOIN payments p ON p.id = pa.payment_id
+    GROUP BY pa.payment_account, p.currency
+  `).all() as Array<{ account: string; currency: string; cents: number }>;
+  const expenseRows = db.prepare(`
+    SELECT payment_account AS account, currency, SUM(ROUND(amount * 100)) AS cents
+    FROM expenses
+    WHERE status != 'rejected' AND payment_account IS NOT NULL AND payment_account != ''
+    GROUP BY payment_account, currency
+  `).all() as Array<{ account: string; currency: string; cents: number }>;
+  const movementRows = db.prepare(`
+    SELECT account, currency, SUM(cents) AS cents FROM (
+      SELECT from_account AS account, from_currency AS currency, -from_amount_cents AS cents FROM finance_account_movements
+      UNION ALL
+      SELECT to_account AS account, to_currency AS currency, to_amount_cents AS cents FROM finance_account_movements
+    ) GROUP BY account, currency
+  `).all() as Array<{ account: string; currency: string; cents: number }>;
+  for (const row of incomeRows) ensure(row.account, row.currency).income = row.cents / 100;
+  for (const row of adjustmentRows) ensure(row.account, row.currency).adjustments = row.cents / 100;
+  for (const row of expenseRows) ensure(row.account, row.currency).expenses = row.cents / 100;
+  for (const row of movementRows) ensure(row.account, row.currency).transfers = row.cents / 100;
+  res.json([...totals.values()].map((row) => ({
+    ...row,
+    current_balance: Math.round((
+      row.opening_balance + row.income - row.adjustments - row.expenses + row.transfers
+    ) * 100) / 100,
+  })));
+});
+
+apiRouter.put('/finance/account-balances/opening', requireAuth, requireRole(['owner', 'finance']), (req: Request, res: Response): void => {
+  const balances = req.body?.opening_balances;
+  if (!Array.isArray(balances) || balances.length > 200 || balances.some((row) =>
+    !row || !isValidFinanceAccount(row.account) ||
+    !billingCurrencies.has(row.currency) ||
+    typeof row.amount !== 'number' || !Number.isFinite(row.amount) || row.amount < 0 || row.amount > 1_000_000_000,
+  )) {
+    res.status(400).json({ error: 'Opening balances must contain valid account, currency, and non-negative amount entries' });
+    return;
+  }
+  const keys = new Set<string>();
+  for (const row of balances) {
+    const key = `${row.currency}\u0000${row.account.trim()}`;
+    if (keys.has(key)) {
+      res.status(400).json({ error: 'Each payment account and currency can have only one opening balance' });
+      return;
+    }
+    keys.add(key);
+  }
+  const savedBalances = balances.map((row: { account: string; currency: string; amount: number }) => ({
+    account: row.account.trim(),
+    currency: row.currency,
+    amount: Math.round(row.amount * 100) / 100,
+  }));
+  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)')
+    .run('finance_account_opening_balances', JSON.stringify(savedBalances));
+  logAudit({
+    userId: req.user!.id,
+    userEmail: req.user!.email,
+    userRole: req.user!.role,
+    action: 'UPDATE_FINANCE_ACCOUNT_OPENING_BALANCES',
+    entityType: 'SETTINGS',
+    details: { accounts: savedBalances.length },
+    ip: req.ip,
+  });
+  res.json({ message: 'Payment-account opening balances saved' });
+});
+
 function getFinanceOpeningBalances(): FinanceOpeningBalances | null {
   const stored = db.prepare("SELECT value FROM settings WHERE key = 'finance_opening_balances'").get() as { value: string } | undefined;
-  if (!stored) return { EUR: 0, USD: 0, EGP: 0 };
+  if (!stored) return { EUR: 0, USD: 0, EGP: 0, GBP: 0 };
 
   try {
     const parsed: unknown = JSON.parse(stored.value);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
     const balances = parsed as Record<string, unknown>;
-    if (!financeCurrencies.every((currency) => typeof balances[currency] === 'number' && Number.isFinite(balances[currency]) && balances[currency] >= 0)) {
+    if (!financeCurrencies.filter((currency) => currency !== 'GBP').every((currency) =>
+      typeof balances[currency] === 'number' && Number.isFinite(balances[currency]) && balances[currency] >= 0) ||
+      (typeof balances.GBP !== 'undefined' && (typeof balances.GBP !== 'number' || !Number.isFinite(balances.GBP) || balances.GBP < 0))) {
       return null;
     }
     return {
       EUR: Math.round((balances.EUR as number) * 100) / 100,
       USD: Math.round((balances.USD as number) * 100) / 100,
       EGP: Math.round((balances.EGP as number) * 100) / 100,
+      GBP: Math.round(((balances.GBP as number | undefined) || 0) * 100) / 100,
     };
   } catch {
     return null;
@@ -2395,8 +3276,25 @@ apiRouter.get('/finance/cash-balances', requireAuth, requireRole(['owner', 'fina
     WHERE status != 'rejected'
     GROUP BY currency
   `).all() as Array<{ currency: string; total: number | null }>;
-  const incomeByCurrency: FinanceOpeningBalances = { EUR: 0, USD: 0, EGP: 0 };
-  const expensesByCurrency: FinanceOpeningBalances = { EUR: 0, USD: 0, EGP: 0 };
+  const adjustmentRows = db.prepare(`
+    SELECT p.currency, SUM(CASE WHEN pa.direction = 'debit' THEN pa.amount_cents ELSE -pa.amount_cents END) AS total_cents
+    FROM payment_adjustments pa
+    JOIN payments p ON p.id = pa.payment_id
+    GROUP BY p.currency
+  `).all() as Array<{ currency: string; total_cents: number | null }>;
+  const movementRows = db.prepare(`
+    SELECT currency, SUM(amount_cents) AS net_cents
+    FROM (
+      SELECT from_currency AS currency, -from_amount_cents AS amount_cents FROM finance_account_movements
+      UNION ALL
+      SELECT to_currency AS currency, to_amount_cents AS amount_cents FROM finance_account_movements
+    )
+    GROUP BY currency
+  `).all() as Array<{ currency: string; net_cents: number | null }>;
+  const incomeByCurrency: FinanceOpeningBalances = { EUR: 0, USD: 0, EGP: 0, GBP: 0 };
+  const expensesByCurrency: FinanceOpeningBalances = { EUR: 0, USD: 0, EGP: 0, GBP: 0 };
+  const adjustmentsByCurrency: FinanceOpeningBalances = { EUR: 0, USD: 0, EGP: 0, GBP: 0 };
+  const movementNetByCurrency: FinanceOpeningBalances = { EUR: 0, USD: 0, EGP: 0, GBP: 0 };
   for (const row of incomeRows) {
     if (financeCurrencies.includes(row.currency as FinanceCurrency)) {
       incomeByCurrency[row.currency as FinanceCurrency] = Math.round((row.total || 0) * 100) / 100;
@@ -2407,14 +3305,48 @@ apiRouter.get('/finance/cash-balances', requireAuth, requireRole(['owner', 'fina
       expensesByCurrency[row.currency as FinanceCurrency] = Math.round((row.total || 0) * 100) / 100;
     }
   }
+  for (const row of adjustmentRows) {
+    if (financeCurrencies.includes(row.currency as FinanceCurrency)) {
+      adjustmentsByCurrency[row.currency as FinanceCurrency] = Math.round((row.total_cents || 0)) / 100;
+    }
+  }
+  for (const row of movementRows) {
+    if (financeCurrencies.includes(row.currency as FinanceCurrency)) {
+      movementNetByCurrency[row.currency as FinanceCurrency] = Math.round((row.net_cents || 0)) / 100;
+    }
+  }
+  const incomeMethodAccountRows = db.prepare(`
+    SELECT payment_method, COALESCE(payment_account, 'Unspecified legacy account') AS payment_account,
+           currency, SUM(amount) AS total
+    FROM payments
+    GROUP BY payment_method, payment_account, currency
+    ORDER BY currency, payment_method, payment_account
+  `).all();
+  const expenseMethodAccountRows = db.prepare(`
+    SELECT COALESCE(payment_method, 'Unspecified legacy method') AS payment_method,
+           COALESCE(payment_account, 'Unspecified legacy account') AS payment_account,
+           currency, SUM(amount) AS total
+    FROM expenses
+    WHERE status != 'rejected'
+    GROUP BY payment_method, payment_account, currency
+    ORDER BY currency, payment_method, payment_account
+  `).all();
   const currentBalances = Object.fromEntries(financeCurrencies.map((currency) => [
     currency,
-    Math.round((openingBalances[currency] + incomeByCurrency[currency] - expensesByCurrency[currency]) * 100) / 100,
+    Math.round((
+      openingBalances[currency] + incomeByCurrency[currency] -
+      expensesByCurrency[currency] - adjustmentsByCurrency[currency] +
+      movementNetByCurrency[currency]
+    ) * 100) / 100,
   ])) as FinanceOpeningBalances;
   res.json({
     opening_balances: openingBalances,
     income_by_currency: incomeByCurrency,
     expenses_by_currency: expensesByCurrency,
+    adjustments_by_currency: adjustmentsByCurrency,
+    movement_net_by_currency: movementNetByCurrency,
+    income_by_method_account: incomeMethodAccountRows,
+    expenses_by_method_account: expenseMethodAccountRows,
     current_balances: currentBalances,
   });
 });
@@ -2423,7 +3355,7 @@ apiRouter.patch('/finance/cash-balances', requireAuth, requireRole(['owner', 'fi
   const balances = req.body?.opening_balances;
   if (!balances || typeof balances !== 'object' || Array.isArray(balances) ||
       !financeCurrencies.every((currency) => typeof balances[currency] === 'number' && Number.isFinite(balances[currency]) && balances[currency] >= 0 && balances[currency] <= 1_000_000_000)) {
-    res.status(400).json({ error: 'Opening balances must include non-negative EUR, USD, and EGP amounts' });
+    res.status(400).json({ error: 'Opening balances must include non-negative EUR, USD, EGP, and GBP amounts' });
     return;
   }
 
@@ -2431,6 +3363,7 @@ apiRouter.patch('/finance/cash-balances', requireAuth, requireRole(['owner', 'fi
     EUR: Math.round(balances.EUR * 100) / 100,
     USD: Math.round(balances.USD * 100) / 100,
     EGP: Math.round(balances.EGP * 100) / 100,
+    GBP: Math.round(balances.GBP * 100) / 100,
   };
   const now = new Date().toISOString();
   db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)')
@@ -2876,7 +3809,8 @@ apiRouter.get('/backup/export', requireAuth, requireRole(['owner']), (req: Reque
   const tables = [
     'users', 'students', 'inquiries', 'courses', 'course_sessions', 'bookings',
     'daily_activities', 'activity_participants', 'invoices', 'invoice_items', 'customer_requests',
-    'payments', 'expenses', 'payroll_periods', 'payroll_records', 'equipment',
+    'payments', 'payment_allocations', 'payment_adjustments', 'payment_adjustment_allocations',
+    'expenses', 'finance_account_movements', 'payroll_periods', 'payroll_records', 'equipment',
     'equipment_checkouts', 'settings', 'audit_logs'
   ];
 

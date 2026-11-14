@@ -51,12 +51,20 @@ after(async () => {
   db.pragma('wal_checkpoint(TRUNCATE)');
   db.close();
   process.chdir(originalDirectory);
-  rmSync(temporaryDirectory, { recursive: true, force: true });
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      rmSync(temporaryDirectory, { recursive: true, force: true });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EPERM' || attempt >= 4) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+    }
+  }
 });
 
 async function request(
   endpoint: string,
-  method: 'GET' | 'POST' | 'PATCH' = 'GET',
+  method: 'GET' | 'POST' | 'PATCH' | 'PUT' = 'GET',
   body?: unknown,
   requestToken = financeToken,
 ): Promise<{ status: number; data: any }> {
@@ -73,17 +81,18 @@ async function request(
 
 test('opening cash balances are saved by currency and used for current cash positions', async () => {
   const saved = await request('/finance/cash-balances', 'PATCH', {
-    opening_balances: { EUR: 100.25, USD: 200, EGP: 3000.75 },
+    opening_balances: { EUR: 100.25, USD: 200, EGP: 3000.75, GBP: 40.5 },
   }, ownerToken);
   assert.equal(saved.status, 200);
 
   const loaded = await request('/finance/cash-balances');
   assert.equal(loaded.status, 200);
-  assert.deepEqual(loaded.data.opening_balances, { EUR: 100.25, USD: 200, EGP: 3000.75 });
+  assert.deepEqual(loaded.data.opening_balances, { EUR: 100.25, USD: 200, EGP: 3000.75, GBP: 40.5 });
   assert.deepEqual(loaded.data.current_balances, {
     EUR: Math.round((100.25 + loaded.data.income_by_currency.EUR - loaded.data.expenses_by_currency.EUR) * 100) / 100,
     USD: Math.round((200 + loaded.data.income_by_currency.USD - loaded.data.expenses_by_currency.USD) * 100) / 100,
     EGP: Math.round((3000.75 + loaded.data.income_by_currency.EGP - loaded.data.expenses_by_currency.EGP) * 100) / 100,
+    GBP: Math.round((40.5 + loaded.data.income_by_currency.GBP - loaded.data.expenses_by_currency.GBP) * 100) / 100,
   });
 });
 
@@ -160,7 +169,7 @@ test('opening balances reject invalid values and remain restricted to finance ro
   assert.equal(invalid.status, 400);
 
   const unauthorized = await request('/finance/cash-balances', 'PATCH', {
-    opening_balances: { EUR: 1, USD: 2, EGP: 3 },
+    opening_balances: { EUR: 1, USD: 2, EGP: 3, GBP: 4 },
   }, instructorToken);
   assert.equal(unauthorized.status, 403);
 });
@@ -189,7 +198,14 @@ test('invoice edits persist service details and totals without rewriting payment
     due_date: now.slice(0, 10),
     tax_rate: 10,
     notes: 'Updated service details',
-    items: [{ category: 'training', description: 'Group training session', quantity: 2, unit_price: 60 }],
+    items: [{
+      category: 'accommodation',
+      description: 'Lighthouse Room',
+      quantity: 2,
+      unit_price: 60,
+      check_in_date: '2030-10-10',
+      check_out_date: '2030-10-12',
+    }],
   });
   assert.equal(saved.status, 200);
   assert.equal(saved.data.total_amount, 132);
@@ -200,11 +216,45 @@ test('invoice edits persist service details and totals without rewriting payment
     status: string;
     notes: string;
   };
-  const items = db.prepare('SELECT category, description, quantity, unit_price, total_price FROM invoice_items WHERE invoice_id = ?').all(invoiceId);
+  const items = db.prepare('SELECT category, description, quantity, unit_price, total_price, check_in_date, check_out_date FROM invoice_items WHERE invoice_id = ?').all(invoiceId);
   const paymentCount = (db.prepare('SELECT COUNT(*) AS count FROM payments WHERE invoice_id = ?').get(invoiceId) as { count: number }).count;
   assert.deepEqual(invoice, { total_amount: 132, paid_amount: 30, status: 'partially_paid', notes: 'Updated service details' });
-  assert.deepEqual(items, [{ category: 'training', description: 'Group training session', quantity: 2, unit_price: 60, total_price: 120 }]);
+  assert.deepEqual(items, [{
+    category: 'accommodation',
+    description: 'Lighthouse Room',
+    quantity: 2,
+    unit_price: 60,
+    total_price: 120,
+    check_in_date: '2030-10-10',
+    check_out_date: '2030-10-12',
+  }]);
   assert.equal(paymentCount, 1);
+});
+
+test('direct invoices require accommodation dates and persist the stay', async () => {
+  const student = db.prepare('SELECT id FROM students LIMIT 1').get() as { id: string };
+  const missingDates = await request('/finance/invoices', 'POST', {
+    student_id: student.id,
+    currency: 'EUR',
+    items: [{ category: 'accommodation', description: 'Islands Room', quantity: 2, unit_price: 30 }],
+  });
+  assert.equal(missingDates.status, 400);
+
+  const created = await request('/finance/invoices', 'POST', {
+    student_id: student.id,
+    currency: 'EUR',
+    items: [{
+      category: 'accommodation',
+      description: 'Islands Room',
+      quantity: 2,
+      unit_price: 30,
+      check_in_date: '2030-11-03',
+      check_out_date: '2030-11-05',
+    }],
+  });
+  assert.equal(created.status, 201);
+  const stay = db.prepare('SELECT check_in_date, check_out_date FROM invoice_items WHERE invoice_id = ?').get(created.data.id);
+  assert.deepEqual(stay, { check_in_date: '2030-11-03', check_out_date: '2030-11-05' });
 });
 
 test('invoice edits reject invalid services and totals below payments already received', async () => {
@@ -225,4 +275,246 @@ test('invoice edits reject invalid services and totals below payments already re
     items: [{ category: 'unlisted', description: 'Service', quantity: 1, unit_price: 50 }],
   });
   assert.equal(invalidCategory.status, 400);
+});
+
+test('invoice payments require service allocations and refunds append to the original payment', async () => {
+  const student = db.prepare('SELECT id FROM students LIMIT 1').get() as { id: string };
+  const now = new Date().toISOString();
+  const invoiceId = 'inv_finance_allocation_test';
+  const itemId = 'item_finance_allocation_test';
+  db.prepare(`
+    INSERT INTO invoices (
+      id, invoice_number, student_id, issue_date, due_date, currency, subtotal,
+      tax_rate, tax_amount, total_amount, paid_amount, status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'GBP', 100, 0, 0, 100, 0, 'issued', ?, ?)
+  `).run(invoiceId, 'INV-FINANCE-ALLOCATION-TEST', student.id, now.slice(0, 10), now.slice(0, 10), now, now);
+  db.prepare(`
+    INSERT INTO invoice_items (id, invoice_id, category, description, quantity, unit_price, total_price)
+    VALUES (?, ?, 'course', 'SSI Freediver course', 1, 100, 100)
+  `).run(itemId, invoiceId);
+
+  const incomplete = await request(`/finance/invoices/${invoiceId}/payments`, 'POST', {
+    amount: 50,
+    customer_id: student.id,
+    payment_method: 'Cash GBP',
+    payment_account: 'Cash GBP',
+    payment_date: now.slice(0, 10),
+    allocations: [],
+  });
+  assert.equal(incomplete.status, 400);
+
+  const recorded = await request(`/finance/invoices/${invoiceId}/payments`, 'POST', {
+    amount: 50,
+    customer_id: student.id,
+    payment_method: 'Cash GBP',
+    payment_account: 'Cash GBP',
+    payment_date: now.slice(0, 10),
+    reference_number: 'RECEIPT-50',
+    notes: 'Course installment',
+    allocations: [{ item_id: itemId, beneficiary_student_id: student.id, amount: 50 }],
+  });
+  assert.equal(recorded.status, 201);
+  const paymentId = recorded.data.paymentId as string;
+  const allocation = db.prepare('SELECT id FROM payment_allocations WHERE payment_id = ?').get(paymentId) as { id: string };
+
+  const unauthorized = await request(`/finance/payments/${paymentId}/adjustments`, 'POST', {
+    adjustment_type: 'refund',
+    direction: 'debit',
+    amount: 10,
+    adjustment_date: now.slice(0, 10),
+    payment_method: 'Cash GBP',
+    payment_account: 'Cash GBP',
+    reason: 'Duplicate refund attempt',
+    allocations: [{ payment_allocation_id: allocation.id, amount: 10 }],
+  }, instructorToken);
+  assert.equal(unauthorized.status, 403);
+
+  const refunded = await request(`/finance/payments/${paymentId}/adjustments`, 'POST', {
+    adjustment_type: 'refund',
+    direction: 'debit',
+    amount: 20,
+    adjustment_date: now.slice(0, 10),
+    payment_method: 'Cash GBP',
+    payment_account: 'Cash GBP',
+    reason: 'Customer schedule change',
+    reference_number: 'REF-20',
+    allocations: [{ payment_allocation_id: allocation.id, amount: 20 }],
+  });
+  assert.equal(refunded.status, 201);
+  const invoice = db.prepare('SELECT paid_amount, status FROM invoices WHERE id = ?').get(invoiceId) as { paid_amount: number; status: string };
+  assert.deepEqual(invoice, { paid_amount: 30, status: 'partially_paid' });
+
+  const listed = await request('/finance/invoices');
+  const savedInvoice = listed.data.find((entry: any) => entry.id === invoiceId);
+  assert.equal(savedInvoice.payments[0].net_amount, 30);
+  assert.equal(savedInvoice.payments[0].allocations[0].service_label, 'SSI Freediver course');
+  assert.equal(savedInvoice.payments[0].adjustments[0].reason, 'Customer schedule change');
+  assert.equal(typeof savedInvoice.payments[0].recorded_by_name, 'string');
+  assert.ok(savedInvoice.payments[0].recorded_by_name.length > 0);
+
+  const edited = await request(`/finance/invoices/${invoiceId}`, 'PATCH', {
+    issue_date: now.slice(0, 10),
+    due_date: now.slice(0, 10),
+    tax_rate: 0,
+    notes: 'Service changed after payment',
+    items: [{ category: 'activity', description: 'Ras Mohamed dive trip', quantity: 1, unit_price: 100 }],
+  });
+  assert.equal(edited.status, 200);
+  const allocationSnapshot = db.prepare('SELECT invoice_item_id, service_label FROM payment_allocations WHERE id = ?')
+    .get(allocation.id) as { invoice_item_id: string | null; service_label: string };
+  assert.deepEqual(allocationSnapshot, { invoice_item_id: null, service_label: 'SSI Freediver course' });
+
+  assert.throws(
+    () => db.prepare('UPDATE payment_allocations SET amount_cents = 1 WHERE id = ?').run(allocation.id),
+    /append-only/,
+  );
+  assert.throws(
+    () => db.prepare('DELETE FROM payment_adjustments WHERE id = ?').run(refunded.data.id),
+    /append-only/,
+  );
+  const adjustmentAllocation = db.prepare('SELECT id FROM payment_adjustment_allocations WHERE adjustment_id = ?')
+    .get(refunded.data.id) as { id: string };
+  assert.throws(
+    () => db.prepare('UPDATE payment_adjustment_allocations SET amount_cents = 1 WHERE id = ?').run(adjustmentAllocation.id),
+    /append-only/,
+  );
+  assert.throws(
+    () => db.prepare('DELETE FROM payment_adjustment_allocations WHERE id = ?').run(adjustmentAllocation.id),
+    /append-only/,
+  );
+});
+
+test('account transfers change balances without appearing as income or expense, and categories stay role-gated', async () => {
+  const categories = await request('/finance/categories');
+  assert.equal(categories.status, 200);
+  assert.ok(categories.data.expense.includes('Taxi driving'));
+  assert.ok(categories.data.billing.includes('Bill customer'));
+  assert.ok(categories.data.income.includes('FDD Income Receipt'));
+  assert.equal((await request('/finance/categories', 'GET', undefined, instructorToken)).status, 403);
+
+  const invalidExpenseCategory = await request('/finance/categories', 'PUT', {
+    ...categories.data,
+    expense: [...categories.data.expense, 'Bill customer'],
+  });
+  assert.equal(invalidExpenseCategory.status, 400);
+  const invalidIncomeClassification = await request('/finance/categories', 'PUT', {
+    ...categories.data,
+    income: [...categories.data.income, 'Bill customer'],
+  });
+  assert.equal(invalidIncomeClassification.status, 400);
+
+  const opening = await request('/finance/account-balances/opening', 'PUT', {
+    opening_balances: [
+      { account: 'Cash EUR', currency: 'EUR', amount: 100 },
+      { account: 'Bank EUR', currency: 'EUR', amount: 20 },
+    ],
+  });
+  assert.equal(opening.status, 200);
+  const balancesBefore = await request('/finance/account-balances');
+  const beforeByAccount = new Map(balancesBefore.data.map((row: any) => [`${row.currency}:${row.account}`, row.current_balance]));
+  const before = await request('/finance/cash-balances');
+  const movement = await request('/finance/account-movements', 'POST', {
+    movement_type: 'transfer',
+    from_account: 'Cash EUR',
+    from_currency: 'EUR',
+    from_amount: 15.25,
+    to_account: 'Bank EUR',
+    to_currency: 'EUR',
+    to_amount: 15.25,
+    movement_date: new Date().toISOString().slice(0, 10),
+    reference_number: 'TRANSFER-15',
+    notes: 'Cash deposit to bank',
+  });
+  assert.equal(movement.status, 201);
+  const balances = await request('/finance/account-balances');
+  const byAccount = new Map(balances.data.map((row: any) => [`${row.currency}:${row.account}`, row.current_balance]));
+  assert.equal(byAccount.get('EUR:Cash EUR'), Number(beforeByAccount.get('EUR:Cash EUR')) - 15.25);
+  assert.equal(byAccount.get('EUR:Bank EUR'), Number(beforeByAccount.get('EUR:Bank EUR')) + 15.25);
+  const after = await request('/finance/cash-balances');
+  assert.deepEqual(after.data.income_by_currency, before.data.income_by_currency);
+  assert.deepEqual(after.data.expenses_by_currency, before.data.expenses_by_currency);
+
+  const changed = await request('/finance/categories', 'PUT', {
+    ...categories.data,
+    expense: [...categories.data.expense, 'Test'],
+    income: [...categories.data.income, 'Test income category'],
+  }, ownerToken);
+  assert.equal(changed.status, 200, JSON.stringify(changed.data));
+  const restored = await request('/finance/categories', 'PUT', {
+    ...categories.data,
+    expense: [...categories.data.expense, 'Test'],
+  }, ownerToken);
+  assert.equal(restored.status, 200);
+});
+
+test('expenses post to the selected account and exchanges cannot be misclassified as expenses', async () => {
+  const today = new Date().toISOString().slice(0, 10);
+  const invalidExchange = await request('/finance/expenses', 'POST', {
+    category: 'Exchange',
+    vendor_name: 'Currency desk',
+    amount: 10,
+    currency: 'EUR',
+    payment_method: 'Cash EUR',
+    payment_account: 'Cash EUR',
+    expense_date: today,
+    description: 'Currency exchange',
+  });
+  assert.equal(invalidExchange.status, 400);
+
+  const invalidPrecision = await request('/finance/expenses', 'POST', {
+    category: 'Taxi driving',
+    vendor_name: 'Dahab Taxi',
+    amount: 10.001,
+    currency: 'EUR',
+    payment_method: 'Cash EUR',
+    payment_account: 'Test Expense Account',
+    expense_date: today,
+    description: 'Airport drop-off',
+  });
+  assert.equal(invalidPrecision.status, 400);
+
+  const posted = await request('/finance/expenses', 'POST', {
+    category: 'Taxi driving',
+    vendor_name: 'Dahab Taxi',
+    amount: 12.34,
+    currency: 'EUR',
+    payment_method: 'Cash EUR',
+    payment_account: 'Test Expense Account',
+    expense_date: today,
+    description: 'Airport drop-off',
+    receipt_ref: 'TAXI-12',
+  });
+  assert.equal(posted.status, 201);
+
+  const expenses = await request('/finance/expenses');
+  const saved = expenses.data.find((expense: any) => expense.id === posted.data.id);
+  assert.equal(saved.payment_account, 'Test Expense Account');
+  assert.equal(saved.payment_method, 'Cash EUR');
+  assert.ok(saved.created_by_name);
+
+  const opening = await request('/finance/account-balances/opening', 'PUT', {
+    opening_balances: [{ account: 'Test Expense Account', currency: 'EUR', amount: 100 }],
+  });
+  assert.equal(opening.status, 200);
+  const balances = await request('/finance/account-balances');
+  const account = balances.data.find((row: any) => row.account === 'Test Expense Account' && row.currency === 'EUR');
+  assert.equal(account.opening_balance, 100);
+  assert.equal(account.expenses, 12.34);
+  assert.equal(account.current_balance, 87.66);
+
+  const movements = await request('/finance/account-movements?movement_type=transfer&currency=EUR');
+  assert.equal(movements.status, 200);
+  assert.ok(movements.data.some((movement: any) => movement.reference_number === 'TRANSFER-15'));
+
+  const replaced = await request('/finance/account-balances/opening', 'PUT', { opening_balances: [] });
+  assert.equal(replaced.status, 200);
+  const afterReplace = await request('/finance/account-balances');
+  const noOpening = afterReplace.data.find((row: any) => row.account === 'Test Expense Account' && row.currency === 'EUR');
+  assert.equal(noOpening.opening_balance, 0);
+
+  const backup = await request('/backup/export', 'GET', undefined, ownerToken);
+  assert.equal(backup.status, 200);
+  for (const table of ['payment_allocations', 'payment_adjustments', 'payment_adjustment_allocations', 'finance_account_movements']) {
+    assert.ok(Array.isArray(backup.data.data[table]), `backup contains ${table}`);
+  }
 });
