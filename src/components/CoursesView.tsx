@@ -666,18 +666,30 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
                   <select
                     id="booking-currency"
                     value={enrollData.currency}
-                    onChange={(e) => setEnrollData({
-                      ...enrollData,
-                      currency: e.target.value,
-                      price: e.target.value === 'EGP' ? selectedSessionForEnroll.price_egp || enrollData.price : e.target.value === 'USD' ? enrollData.price : selectedSessionForEnroll.price_eur || enrollData.price,
-                      payment_method: `Cash ${e.target.value}`,
-                    })}
+                    onChange={(e) => {
+                      const currency = e.target.value;
+                      setEnrollData({
+                        ...enrollData,
+                        currency,
+                        price: currency === 'EGP'
+                          ? selectedSessionForEnroll.price_egp || 0
+                          : currency === 'EUR'
+                            ? selectedSessionForEnroll.price_eur || 0
+                            : 0,
+                        deposit_amount: 0,
+                        payment_method: `Cash ${currency}`,
+                      });
+                    }}
                     className="w-full bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus:outline-none focus:border-cyan-400"
                   >
                     <option value="EUR">EUR (€)</option>
                     <option value="EGP">EGP (Egyptian Pound)</option>
                     <option value="USD">USD ($)</option>
+                    <option value="GBP">GBP (£)</option>
                   </select>
+                  {!['EUR', 'EGP'].includes(enrollData.currency) && (
+                    <p className="mt-1 text-[11px] text-slate-400">Enter the booking total manually; no preset price is available for this currency.</p>
+                  )}
                 </div>
               </div>
 

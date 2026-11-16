@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import { initialPosCatalog } from '../src/data/posCatalog.js';
 
 // Ensure data directory exists
 const dataDir = path.resolve(process.cwd(), 'data');
@@ -137,6 +138,26 @@ export function initializeDatabase() {
       created_at TEXT NOT NULL
     );
 
+    -- POS products and services, independent from scheduled course records
+    CREATE TABLE IF NOT EXISTS pos_catalog_items (
+      id TEXT PRIMARY KEY,
+      group_name TEXT NOT NULL,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL,
+      price REAL,
+      price_currency TEXT,
+      unit TEXT,
+      description TEXT,
+      tier_minimum_quantity INTEGER,
+      tier_unit_price REAL,
+      stay_discount INTEGER NOT NULL DEFAULT 0,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      created_by TEXT,
+      updated_by TEXT
+    );
+
     -- Course Sessions / Scheduled Courses
     CREATE TABLE IF NOT EXISTS course_sessions (
       id TEXT PRIMARY KEY,
@@ -258,6 +279,9 @@ export function initializeDatabase() {
       payment_date TEXT NOT NULL,
       reference_number TEXT,
       notes TEXT,
+      invoice_amount_cents INTEGER,
+      eur_amount_cents INTEGER,
+      exchange_rate_to_eur REAL,
       recorded_by TEXT,
       created_at TEXT NOT NULL,
       FOREIGN KEY(invoice_id) REFERENCES invoices(id) ON DELETE RESTRICT
@@ -321,6 +345,8 @@ export function initializeDatabase() {
       adjustment_date TEXT NOT NULL,
       payment_method TEXT NOT NULL,
       payment_account TEXT NOT NULL,
+      cash_amount_cents INTEGER,
+      eur_amount_cents INTEGER,
       reason TEXT NOT NULL,
       reference_number TEXT,
       recorded_by TEXT,
@@ -506,6 +532,23 @@ export function initializeDatabase() {
   if (!paymentColumns.some((column) => column.name === 'payment_account')) {
     db.exec('ALTER TABLE payments ADD COLUMN payment_account TEXT');
   }
+  if (!paymentColumns.some((column) => column.name === 'invoice_amount_cents')) {
+    db.exec('ALTER TABLE payments ADD COLUMN invoice_amount_cents INTEGER');
+  }
+  if (!paymentColumns.some((column) => column.name === 'eur_amount_cents')) {
+    db.exec('ALTER TABLE payments ADD COLUMN eur_amount_cents INTEGER');
+  }
+  if (!paymentColumns.some((column) => column.name === 'exchange_rate_to_eur')) {
+    db.exec('ALTER TABLE payments ADD COLUMN exchange_rate_to_eur REAL');
+  }
+
+  const paymentAdjustmentColumns = db.pragma('table_info(payment_adjustments)') as Array<{ name: string }>;
+  if (!paymentAdjustmentColumns.some((column) => column.name === 'cash_amount_cents')) {
+    db.exec('ALTER TABLE payment_adjustments ADD COLUMN cash_amount_cents INTEGER');
+  }
+  if (!paymentAdjustmentColumns.some((column) => column.name === 'eur_amount_cents')) {
+    db.exec('ALTER TABLE payment_adjustments ADD COLUMN eur_amount_cents INTEGER');
+  }
 
   const expenseColumns = db.pragma('table_info(expenses)') as Array<{ name: string }>;
   if (!expenseColumns.some((column) => column.name === 'payment_method')) {
@@ -547,6 +590,31 @@ export function initializeDatabase() {
 
   db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)')
     .run('booking_safety_rules', JSON.stringify(DEFAULT_BOOKING_SAFETY_RULES));
+
+  const insertCatalogItem = db.prepare(`
+    INSERT OR IGNORE INTO pos_catalog_items (
+      id, group_name, name, category, price, price_currency, unit, description,
+      tier_minimum_quantity, tier_unit_price, stay_discount, is_active, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+  `);
+  const seededAt = new Date().toISOString();
+  for (const item of initialPosCatalog) {
+    insertCatalogItem.run(
+      item.id,
+      item.group,
+      item.name,
+      item.category,
+      item.price ?? null,
+      item.priceCurrency ?? null,
+      item.unit ?? null,
+      item.description ?? null,
+      item.tier?.minimumQuantity ?? null,
+      item.tier?.unitPrice ?? null,
+      item.stayDiscount ? 1 : 0,
+      seededAt,
+      seededAt,
+    );
+  }
 
   db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)')
     .run('finance_categories', JSON.stringify({

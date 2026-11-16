@@ -19,6 +19,7 @@ import {
 
 export type NavTab =
   | 'dashboard'
+  | 'reports'
   | 'students_crm'
   | 'courses'
   | 'calendar'
@@ -61,10 +62,10 @@ export const Navigation: React.FC<NavigationProps> = ({
     lockReason?: string;
   }[] = [
     { id: 'dashboard', label: t.navDashboard, icon: LayoutDashboard },
-    { id: 'calendar', label: 'Planner Calendar', icon: Calendar },
+    { id: 'calendar', label: 'Google Calendar', icon: Calendar },
     {
       id: 'finance',
-      label: 'Invoices & Bills',
+      label: 'Finance',
       icon: Receipt,
       locked: !canAccessCustomerRequests,
       lockReason: 'Owner, Finance & Front Desk only',
@@ -72,7 +73,7 @@ export const Navigation: React.FC<NavigationProps> = ({
     { id: 'notifications', label: 'Notifications', icon: Bell },
     {
       id: 'pos',
-      label: 'POS',
+      label: 'Point of sale',
       icon: Receipt,
       locked: !['owner', 'finance', 'front_desk_crm'].includes(userRole),
       lockReason: 'Owner, Finance & Front Desk only',

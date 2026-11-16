@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { getFinancePeriodSummary, getInvoiceServiceMix } from '../src/utils/financeAnalytics.ts';
+import { getFinanceAccountActivity, getFinancePeriodSummary, getInvoiceServiceMix } from '../src/utils/financeAnalytics.ts';
+import type { InvoiceItem } from '../src/types';
 
 test('finance period summary groups only in-range payments and non-rejected expenses in one currency', () => {
   const invoices = [{
@@ -30,6 +31,7 @@ test('finance period summary groups only in-range payments and non-rejected expe
     date: '2026-11-10',
     label: 'Nov 10',
     income: 25,
+    adjustments: 0,
     expenses: 8.5,
   });
   assert.equal(summary.income, 75);
@@ -46,13 +48,20 @@ test('finance period summary excludes cancelled invoices from receivables', () =
     total_amount: 500,
     paid_amount: 0,
     due_date: '2026-11-01',
-    payments: [],
+    payments: [{
+      currency: 'EGP',
+      payment_date: '2026-11-10',
+      amount: 100,
+      adjustments: [{ direction: 'debit' as const, amount: 40, adjustment_date: '2026-11-10' }],
+    }],
   }];
 
   const summary = getFinancePeriodSummary(invoices, [], 'EGP', '2026-11-10');
   assert.equal(summary.outstanding, 0);
   assert.equal(summary.overdue, 0);
-  assert.equal(summary.net, 0);
+  assert.equal(summary.income, 100);
+  assert.equal(summary.adjustments, -40);
+  assert.equal(summary.net, 60);
 });
 
 test('finance period summary follows the selected reporting range', () => {
@@ -75,31 +84,38 @@ test('finance period summary follows the selected reporting range', () => {
 });
 
 test('invoice service mix groups issued line totals by five service families', () => {
+  const serviceItem = (category: InvoiceItem['category'], total_price: number): InvoiceItem => ({
+    category,
+    description: category || 'other',
+    quantity: 1,
+    unit_price: total_price,
+    total_price,
+  });
   const invoices = [
     {
       currency: 'EUR',
       status: 'issued' as const,
       issue_date: '2026-11-10',
       items: [
-        { category: 'course' as const, total_price: 300 },
-        { category: 'training' as const, total_price: 80 },
-        { category: 'activity' as const, total_price: 120 },
-        { category: 'gear_rental' as const, total_price: 40 },
-        { category: 'shop' as const, total_price: 30 },
-        { category: 'accommodation' as const, total_price: 200 },
+        serviceItem('course', 300),
+        serviceItem('training', 80),
+        serviceItem('activity', 120),
+        serviceItem('gear_rental', 40),
+        serviceItem('shop', 30),
+        serviceItem('accommodation', 200),
       ],
     },
     {
       currency: 'EUR',
       status: 'draft' as const,
       issue_date: '2026-11-10',
-      items: [{ category: 'course' as const, total_price: 900 }],
+      items: [serviceItem('course', 900)],
     },
     {
       currency: 'USD',
       status: 'paid' as const,
       issue_date: '2026-11-10',
-      items: [{ category: 'course' as const, total_price: 500 }],
+      items: [serviceItem('course', 500)],
     },
   ];
 
@@ -111,6 +127,35 @@ test('invoice service mix groups issued line totals by five service families', (
       { group: 'stays', label: 'Accommodation', amount: 200 },
       { group: 'gear', label: 'Gear rental', amount: 40 },
       { group: 'products', label: 'Products & other', amount: 30 },
+    ],
+  );
+});
+
+test('finance account activity separates payment accounts and methods within currency and date range', () => {
+  const invoices = [{
+    currency: 'EUR',
+    status: 'paid' as const,
+    total_amount: 180,
+    paid_amount: 180,
+    due_date: '2026-11-10',
+    payments: [
+      { currency: 'EUR', payment_date: '2026-11-10', amount: 100, payment_account: 'Front desk', payment_method: 'Cash EUR', adjustments: [{ direction: 'debit' as const, amount: 20, adjustment_date: '2026-11-10', payment_account: 'Front desk', payment_method: 'Cash EUR' }] },
+      { currency: 'EUR', payment_date: '2026-11-10', amount: 40, payment_account: 'Bank', payment_method: 'Bank Transfer' },
+      { currency: 'USD', payment_date: '2026-11-10', amount: 500, payment_account: 'Bank', payment_method: 'Bank Transfer' },
+      { currency: 'EUR', payment_date: '2026-11-01', amount: 25, payment_account: 'Front desk', payment_method: 'Cash EUR' },
+    ],
+  }];
+  const expenses = [
+    { currency: 'EUR', status: 'approved' as const, expense_date: '2026-11-10', amount: 15, payment_account: 'Front desk', payment_method: 'Cash EUR' },
+    { currency: 'EUR', status: 'approved' as const, expense_date: '2026-11-10', amount: 12, payment_account: 'Bank', payment_method: 'Bank Transfer' },
+    { currency: 'EUR', status: 'rejected' as const, expense_date: '2026-11-10', amount: 90, payment_account: 'Bank', payment_method: 'Bank Transfer' },
+  ];
+
+  assert.deepEqual(
+    getFinanceAccountActivity(invoices, expenses, 'EUR', '2026-11-10', '2026-11-10'),
+    [
+      { account: 'Bank', paymentMethod: 'Bank Transfer', income: 40, adjustments: 0, expenses: 12, net: 28 },
+      { account: 'Front desk', paymentMethod: 'Cash EUR', income: 100, adjustments: -20, expenses: 15, net: 65 },
     ],
   );
 });

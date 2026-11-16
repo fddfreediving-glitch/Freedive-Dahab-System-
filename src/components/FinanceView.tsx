@@ -63,12 +63,6 @@ const stayNights = (checkIn?: string, checkOut?: string) => {
   return Number.isFinite(nights) ? nights : 0;
 };
 
-interface PaymentAllocationDraft {
-  item_id: string;
-  beneficiary_student_id: string;
-  amount: number;
-}
-
 interface AdjustmentAllocationDraft {
   payment_allocation_id?: string;
   item_id?: string;
@@ -80,6 +74,14 @@ interface FinanceCategories {
   expense: string[];
   billing: string[];
   income: string[];
+}
+
+type PaymentCurrency = 'EUR' | 'EGP' | 'USD' | 'GBP';
+
+interface FinanceFxRates {
+  rates_to_eur: Record<PaymentCurrency, number | null>;
+  updated_at: string | null;
+  updated_by_name: string | null;
 }
 
 interface FinanceHistoryRow {
@@ -152,6 +154,7 @@ const requestCatalog: Record<RequestCategory, RequestCatalogItem[]> = {
 };
 
 interface FinanceViewProps {
+  initialTab?: 'requests' | 'income' | 'expenses' | 'invoices' | 'history' | 'movements';
   invoices: Invoice[];
   customerRequests: CustomerRequest[];
   expenses: Expense[];
@@ -160,7 +163,7 @@ interface FinanceViewProps {
   onRefresh: () => void;
   onCreateInvoice: (invoiceData: any) => Promise<void>;
   onUpdateInvoice: (invoiceId: string, changes: InvoiceUpdateInput) => Promise<void>;
-  onRecordPayment: (invoiceId: string, paymentData: any) => Promise<void>;
+  onRecordPayment: (invoiceId: string, paymentData: PaymentInput) => Promise<void>;
   onCreateExpense: (expenseData: any) => Promise<void>;
   onCreateCustomerRequest: (data: CustomerRequestInput) => Promise<void>;
   onRecordCustomerRequestPayment: (requestId: string, paymentData: PaymentInput) => Promise<void>;
@@ -168,6 +171,7 @@ interface FinanceViewProps {
 }
 
 export const FinanceView: React.FC<FinanceViewProps> = ({
+  initialTab,
   invoices,
   customerRequests,
   expenses,
@@ -188,7 +192,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
   const frontDeskOnly = userRole === 'front_desk_crm';
 
   const [activeTab, setActiveTab] = useState<'requests' | 'income' | 'expenses' | 'invoices' | 'history' | 'movements'>(
-    frontDeskOnly ? 'requests' : 'income',
+    frontDeskOnly ? 'requests' : initialTab || 'income',
   );
   const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [searchTerm, setSearchTerm] = useState('');
@@ -201,6 +205,19 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
   const [categoryDraft, setCategoryDraft] = useState('');
   const [accountMovements, setAccountMovements] = useState<FinanceAccountMovement[]>([]);
   const [accountBalances, setAccountBalances] = useState<FinanceAccountBalance[]>([]);
+  const [fxRates, setFxRates] = useState<FinanceFxRates>({
+    rates_to_eur: { EUR: 1, EGP: null, USD: null, GBP: null },
+    updated_at: null,
+    updated_by_name: null,
+  });
+  const [fxRateDraft, setFxRateDraft] = useState<Record<PaymentCurrency, string>>({
+    EUR: '1',
+    EGP: '',
+    USD: '',
+    GBP: '',
+  });
+  const [fxSaving, setFxSaving] = useState(false);
+  const [fxError, setFxError] = useState<string | null>(null);
   const [openingBalanceDraft, setOpeningBalanceDraft] = useState<Array<{ account: string; currency: string; amount: number }>>([]);
   const [historyFilters, setHistoryFilters] = useState({
     from_date: '',
@@ -286,7 +303,6 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
     reference_number: '',
     notes: '',
   });
-  const [paymentAllocations, setPaymentAllocations] = useState<PaymentAllocationDraft[]>([]);
 
   const [newCustomerRequest, setNewCustomerRequest] = useState({
     student_id: students[0]?.id || '',
@@ -335,10 +351,18 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
       apiRequest<FinanceCategories>('/api/finance/categories'),
       apiRequest<FinanceAccountMovement[]>('/api/finance/account-movements'),
       apiRequest<FinanceAccountBalance[]>('/api/finance/account-balances'),
-    ]).then(([categories, movements, balances]) => {
+      apiRequest<FinanceFxRates>('/api/finance/fx-rates'),
+    ]).then(([categories, movements, balances, rates]) => {
       setFinanceCategories(categories);
       setAccountMovements(movements);
       setAccountBalances(balances);
+      setFxRates(rates);
+      setFxRateDraft({
+        EUR: '1',
+        EGP: rates.rates_to_eur.EGP === null ? '' : String(rates.rates_to_eur.EGP),
+        USD: rates.rates_to_eur.USD === null ? '' : String(rates.rates_to_eur.USD),
+        GBP: rates.rates_to_eur.GBP === null ? '' : String(rates.rates_to_eur.GBP),
+      });
       setOpeningBalanceDraft(balances.map(({ account, currency, opening_balance }) => ({
         account, currency, amount: opening_balance,
       })));
@@ -686,6 +710,41 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
     }
   };
 
+  const handleSaveFxRates = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const rates_to_eur = {
+      EUR: 1,
+      EGP: fxRateDraft.EGP.trim() ? Number(fxRateDraft.EGP) : null,
+      USD: fxRateDraft.USD.trim() ? Number(fxRateDraft.USD) : null,
+      GBP: fxRateDraft.GBP.trim() ? Number(fxRateDraft.GBP) : null,
+    };
+    if (Object.entries(rates_to_eur).some(([currency, rate]) =>
+      currency !== 'EUR' && rate !== null && (!Number.isFinite(rate) || rate <= 0 || rate > 1000),
+    )) {
+      setFxError('Each EUR conversion rate must be a positive number or left blank.');
+      return;
+    }
+    setFxError(null);
+    setFxSaving(true);
+    try {
+      const saved = await apiRequest<FinanceFxRates>('/api/finance/fx-rates', {
+        method: 'PUT',
+        body: JSON.stringify({ rates_to_eur }),
+      });
+      setFxRates(saved);
+      setFxRateDraft({
+        EUR: '1',
+        EGP: saved.rates_to_eur.EGP === null ? '' : String(saved.rates_to_eur.EGP),
+        USD: saved.rates_to_eur.USD === null ? '' : String(saved.rates_to_eur.USD),
+        GBP: saved.rates_to_eur.GBP === null ? '' : String(saved.rates_to_eur.GBP),
+      });
+    } catch (error) {
+      setFxError(error instanceof Error ? error.message : 'EUR conversion rates could not be saved');
+    } finally {
+      setFxSaving(false);
+    }
+  };
+
   const handleSaveOpeningBalances = async () => {
     setFormError(null);
     setSubmitting(true);
@@ -726,13 +785,12 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
     adjustmentReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setFormError(null);
     setAdjustmentTarget({ payment, invoice });
-    const cashMethod = `Cash ${invoice.currency}`;
     setAdjustmentData({
       adjustment_type: 'refund',
       direction: 'debit',
       adjustment_date: new Date().toISOString().slice(0, 10),
-      payment_method: cashMethod,
-      payment_account: payment.payment_account || cashMethod,
+      payment_method: payment.payment_method,
+      payment_account: payment.payment_account || payment.payment_method,
       reason: '',
       reference_number: '',
     });
@@ -786,18 +844,12 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
     e.preventDefault();
     if (!selectedInvoiceForPayment) return;
     setFormError(null);
-    const allocatedCents = paymentAllocations.reduce((sum, allocation) => sum + Math.round(allocation.amount * 100), 0);
-    if (allocatedCents !== Math.round(paymentData.amount * 100)) {
-      setFormError('Allocate the full payment across the invoice services before saving.');
-      return;
-    }
     setSubmitting(true);
     try {
-      const payment = { ...paymentData, allocations: paymentAllocations.filter((allocation) => allocation.amount > 0) };
       if (paymentRequestId) {
-        await onRecordCustomerRequestPayment(paymentRequestId, payment);
+        await onRecordCustomerRequestPayment(paymentRequestId, paymentData);
       } else {
-        await onRecordPayment(selectedInvoiceForPayment.id, payment);
+        await onRecordPayment(selectedInvoiceForPayment.id, paymentData);
       }
       setSelectedInvoiceForPayment(null);
       setPaymentRequestId(null);
@@ -897,43 +949,6 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
       reference_number: '',
       notes: `Payment for ${inv.items?.map((item) => item.description).join(', ') || inv.invoice_number}`,
     });
-    const items = inv.items || [];
-    const usedByItem = new Map<string, number>();
-    for (const payment of inv.payments || []) {
-      for (const allocation of payment.allocations || []) {
-        if (allocation.invoice_item_id) {
-          usedByItem.set(
-            allocation.invoice_item_id,
-            (usedByItem.get(allocation.invoice_item_id) || 0) + allocation.amount_cents,
-          );
-        }
-      }
-      for (const adjustment of payment.adjustments || []) {
-        for (const allocation of adjustment.allocations || []) {
-          if (allocation.invoice_item_id) {
-            const sign = adjustment.direction === 'debit' ? -1 : 1;
-            usedByItem.set(
-              allocation.invoice_item_id,
-              (usedByItem.get(allocation.invoice_item_id) || 0) + sign * allocation.amount_cents,
-            );
-          }
-        }
-      }
-    }
-    let remainingCents = Math.round(balance * 100);
-    setPaymentAllocations(items.map((item) => {
-      const availableCents = Math.max(
-        0,
-        Math.round((item.total_price ?? item.quantity * item.unit_price) * 100) - (usedByItem.get(item.id || '') || 0),
-      );
-      const amountCents = Math.min(remainingCents, availableCents);
-      remainingCents -= amountCents;
-      return {
-        item_id: item.id || '',
-        beneficiary_student_id: inv.student_id,
-        amount: amountCents / 100,
-      };
-    }));
   };
 
   const closePaymentModal = () => {
@@ -1007,6 +1022,32 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
       return { ...item, unit_price: currency === 'EUR' ? catalogItem?.price || 0 : 0 };
     }));
   };
+
+  const paymentCurrency = paymentData.currency as PaymentCurrency;
+  const invoiceCurrency = selectedInvoiceForPayment?.currency as PaymentCurrency | undefined;
+  const paymentRateToEur = fxRates.rates_to_eur[paymentCurrency] ?? null;
+  const invoiceRateToEur = invoiceCurrency ? fxRates.rates_to_eur[invoiceCurrency] ?? null : null;
+  const paymentEurEquivalent = paymentRateToEur === null
+    ? null
+    : Math.round(paymentData.amount * paymentRateToEur * 100) / 100;
+  const invoiceCreditEquivalent = selectedInvoiceForPayment && invoiceCurrency
+    ? paymentCurrency === invoiceCurrency
+      ? paymentData.amount
+      : paymentRateToEur !== null && invoiceRateToEur !== null
+        ? Math.round(paymentData.amount * paymentRateToEur / invoiceRateToEur * 100) / 100
+        : null
+    : null;
+  const paymentNeedsFxRate = Boolean(
+    selectedInvoiceForPayment &&
+    invoiceCurrency &&
+    paymentCurrency !== invoiceCurrency &&
+    (paymentRateToEur === null || invoiceRateToEur === null),
+  );
+  const paymentExceedsInvoiceBalance = Boolean(
+    selectedInvoiceForPayment &&
+    invoiceCreditEquivalent !== null &&
+    invoiceCreditEquivalent > selectedInvoiceForPayment.total_amount - selectedInvoiceForPayment.paid_amount,
+  );
 
   return (
     <div className="space-y-6">
@@ -1187,6 +1228,55 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
         </button>
         </>}
       </div>
+
+      {canAccessFinance && (
+        <details className="rounded-xl border border-[#E8EEF7] bg-white dark:border-slate-800 dark:bg-[#1E293B]">
+          <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#4C8BF5] dark:text-white">
+            EUR conversion rates
+            <span className="ml-2 text-xs font-normal text-slate-500 dark:text-slate-400">
+              Payment rates are saved with each receipt.
+            </span>
+          </summary>
+          <form onSubmit={handleSaveFxRates} className="space-y-3 border-t border-[#E8EEF7] p-4 dark:border-slate-800">
+            <p className="text-xs text-slate-600 dark:text-slate-300">
+              Enter how many euros one unit of each currency is worth. Rates are finance-controlled; no rate is guessed or fetched from an outside service.
+              {fxRates.updated_at && <> Last updated {new Date(fxRates.updated_at).toLocaleString()} by {fxRates.updated_by_name || 'Finance'}.</>}
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <label htmlFor="finance-fx-eur" className="mb-1 block text-xs text-slate-600 dark:text-slate-300">EUR → EUR</label>
+                <input id="finance-fx-eur" value="1.00000000" readOnly className="min-h-10 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300" />
+              </div>
+              {(['EGP', 'USD', 'GBP'] as const).map((currency) => (
+                <div key={currency}>
+                  <label htmlFor={`finance-fx-${currency.toLowerCase()}`} className="mb-1 block text-xs text-slate-600 dark:text-slate-300">
+                    1 {currency} equals EUR
+                  </label>
+                  <input
+                    id={`finance-fx-${currency.toLowerCase()}`}
+                    type="number"
+                    min="0.00000001"
+                    max="1000"
+                    step="0.00000001"
+                    inputMode="decimal"
+                    value={fxRateDraft[currency]}
+                    onChange={(event) => setFxRateDraft((current) => ({ ...current, [currency]: event.target.value }))}
+                    placeholder="Enter current rate"
+                    className="min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#4C8BF5] dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                  />
+                </div>
+              ))}
+            </div>
+            {fxError && <p role="alert" className="text-xs text-rose-700 dark:text-rose-300">{fxError}</p>}
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">A blank rate blocks cross-currency bill payments until set.</p>
+              <button type="submit" disabled={fxSaving} className="min-h-10 rounded-lg bg-[#4C8BF5] px-4 text-xs font-semibold text-white hover:bg-blue-600 disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4C8BF5]">
+                {fxSaving ? 'Saving rates...' : 'Save rates'}
+              </button>
+            </div>
+          </form>
+        </details>
+      )}
 
       {activeTab === 'requests' && (
         <section
@@ -2218,20 +2308,54 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <div>
-                  <label htmlFor="finance-payment-amount" className="block text-slate-400 mb-1">Amount *</label>
+                  <label htmlFor="finance-payment-amount" className="block text-slate-400 mb-1">Amount received *</label>
                   <input
                     id="finance-payment-amount"
                     type="number"
                     required
                     min="0.01"
-                    max={selectedInvoiceForPayment.total_amount - selectedInvoiceForPayment.paid_amount}
                     step="0.01"
                     value={paymentData.amount}
-                    onChange={(e) => setPaymentData({ ...paymentData, amount: Number(e.target.value) })}
+                    onChange={(e) => setPaymentData((current) => ({ ...current, amount: Number(e.target.value) }))}
                     className="w-full bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus:outline-none focus:border-cyan-400 font-mono"
                   />
+                </div>
+                <div>
+                  <label htmlFor="finance-payment-currency" className="block text-slate-400 mb-1">Currency received *</label>
+                  <select
+                    id="finance-payment-currency"
+                    required
+                    value={paymentData.currency}
+                    onChange={(event) => {
+                      const nextCurrency = event.target.value as PaymentCurrency;
+                      const sourceRate = fxRates.rates_to_eur[nextCurrency];
+                      const invoiceRate = selectedInvoiceForPayment
+                        ? fxRates.rates_to_eur[selectedInvoiceForPayment.currency as PaymentCurrency]
+                        : null;
+                      const balance = selectedInvoiceForPayment
+                        ? selectedInvoiceForPayment.total_amount - selectedInvoiceForPayment.paid_amount
+                        : 0;
+                      const nextAmount = sourceRate !== null && sourceRate !== undefined &&
+                        invoiceRate !== null && invoiceRate !== undefined
+                        ? Math.round(balance * invoiceRate / sourceRate * 100) / 100
+                        : paymentData.amount;
+                      setPaymentData((current) => ({
+                        ...current,
+                        amount: nextAmount,
+                        currency: nextCurrency,
+                        payment_method: current.payment_method.startsWith('Cash ') ? `Cash ${nextCurrency}` : current.payment_method,
+                        payment_account: current.payment_account.startsWith('Cash ') ? `Cash ${nextCurrency}` : current.payment_account,
+                      }));
+                    }}
+                    className="w-full bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
+                  >
+                    <option value="EUR">EUR — Euro</option>
+                    <option value="EGP">EGP — Egyptian Pound</option>
+                    <option value="USD">USD — US Dollar</option>
+                    <option value="GBP">GBP — British Pound</option>
+                  </select>
                 </div>
                 <div>
                   <label htmlFor="finance-payment-method" className="block text-slate-400 mb-1">Payment Method *</label>
@@ -2241,9 +2365,11 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                     onChange={(e) => setPaymentData((current) => ({
                       ...current,
                       payment_method: e.target.value,
-                      payment_account: current.payment_account.startsWith('Cash ') ? e.target.value : current.payment_account,
+                      payment_account: ['Cash EUR', 'Cash EGP', 'Cash USD', 'Cash GBP', 'Credit Card', 'Bank Transfer', 'InstaPay Egypt'].includes(current.payment_account)
+                        ? e.target.value
+                        : current.payment_account,
                     }))}
-                    className="w-full bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus:outline-none focus:border-cyan-400"
+                    className="w-full bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
                   >
                     <option value={`Cash ${paymentData.currency}`}>Cash ({paymentData.currency})</option>
                     <option value="Credit Card">Credit Card Terminal</option>
@@ -2251,6 +2377,25 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                     <option value="InstaPay Egypt">InstaPay Egypt</option>
                   </select>
                 </div>
+              </div>
+
+              <div aria-live="polite" className={`rounded-lg border p-3 ${paymentNeedsFxRate ? 'border-amber-800/60 bg-amber-950/30 text-amber-200' : 'border-cyan-900/50 bg-[#0c1f36] text-slate-300'}`}>
+                {paymentNeedsFxRate ? (
+                  <p>
+                    An exchange rate is needed to apply this payment to the bill. Ask Finance to save the current EUR rates below the finance tabs.
+                  </p>
+                ) : paymentExceedsInvoiceBalance ? (
+                  <p role="alert">The converted payment is greater than the remaining bill balance.</p>
+                ) : (
+                  <p>
+                    {paymentEurEquivalent === null
+                      ? 'The payment will be recorded in its received currency; a EUR equivalent is not configured for this rate.'
+                      : `EUR equivalent: €${paymentEurEquivalent.toFixed(2)}.`}
+                    {invoiceCreditEquivalent !== null && (
+                      <> Bill credit: {selectedInvoiceForPayment.currency} {invoiceCreditEquivalent.toFixed(2)}.</>
+                    )}
+                  </p>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -2263,49 +2408,6 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                   <input id="finance-payment-account" required maxLength={100} value={paymentData.payment_account} onChange={(event) => setPaymentData({ ...paymentData, payment_account: event.target.value })} className="w-full bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400" />
                 </div>
               </div>
-
-              <fieldset className="space-y-3 rounded-xl border border-cyan-900/50 bg-[#0c1f36] p-3">
-                <legend className="px-2 font-semibold text-cyan-100">Allocate this payment to services and beneficiaries *</legend>
-                <p className="text-[11px] text-slate-400">Allocation total must equal the payment exactly. Add another row to split a service between customers.</p>
-                {paymentAllocations.map((allocation, index) => (
-                  <div key={`${index}-${allocation.item_id}`} className="grid grid-cols-1 gap-2 rounded-lg border border-cyan-900/40 p-2 sm:grid-cols-12">
-                    <div className="sm:col-span-5">
-                      <label htmlFor={`payment-service-${index}`} className="mb-1 block text-slate-400">Service *</label>
-                      <select id={`payment-service-${index}`} required value={allocation.item_id} onChange={(event) => setPaymentAllocations((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, item_id: event.target.value } : row))} className="min-h-10 w-full rounded border border-cyan-900/60 bg-[#071322] p-2 text-white">
-                        {(selectedInvoiceForPayment.items || []).map((item) => <option key={item.id} value={item.id}>{item.description}</option>)}
-                      </select>
-                    </div>
-                    <div className="sm:col-span-4">
-                      <label htmlFor={`payment-beneficiary-${index}`} className="mb-1 block text-slate-400">Service for *</label>
-                      <select id={`payment-beneficiary-${index}`} required value={allocation.beneficiary_student_id} onChange={(event) => setPaymentAllocations((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, beneficiary_student_id: event.target.value } : row))} className="min-h-10 w-full rounded border border-cyan-900/60 bg-[#071322] p-2 text-white">
-                        {students.map((student) => <option key={student.id} value={student.id}>{student.first_name} {student.last_name}</option>)}
-                      </select>
-                    </div>
-                    <div className="sm:col-span-2">
-                      <label htmlFor={`payment-allocation-${index}`} className="mb-1 block text-slate-400">Amount *</label>
-                      <input id={`payment-allocation-${index}`} required type="number" min="0" max={paymentData.amount} step="0.01" value={allocation.amount || ''} onChange={(event) => setPaymentAllocations((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, amount: Number(event.target.value) } : row))} className="min-h-10 w-full rounded border border-cyan-900/60 bg-[#071322] p-2 text-right font-mono text-white" />
-                    </div>
-                    <div className="flex items-end sm:col-span-1">
-                      <button type="button" disabled={paymentAllocations.length <= 1} aria-label={`Remove allocation ${index + 1}`} onClick={() => setPaymentAllocations((current) => current.filter((_, rowIndex) => rowIndex !== index))} className="min-h-10 w-full rounded text-rose-300 hover:bg-rose-950/50 disabled:opacity-30">×</button>
-                    </div>
-                  </div>
-                ))}
-                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <button type="button" onClick={() => {
-                    const item = selectedInvoiceForPayment.items?.[0];
-                    if (!item) return;
-                    const unassignedStudent = students.find((student) => !paymentAllocations.some((row) => row.item_id === item.id && row.beneficiary_student_id === student.id));
-                    setPaymentAllocations((current) => [...current, {
-                      item_id: item.id || '',
-                      beneficiary_student_id: unassignedStudent?.id || selectedInvoiceForPayment.student_id,
-                      amount: 0,
-                    }]);
-                  }} className="min-h-9 rounded border border-cyan-800 px-3 text-cyan-200">Add allocation</button>
-                  <span className={Math.round(paymentAllocations.reduce((sum, allocation) => sum + allocation.amount, 0) * 100) === Math.round(paymentData.amount * 100) ? 'font-semibold text-emerald-300' : 'font-semibold text-amber-300'}>
-                    Allocated {paymentData.currency} {paymentAllocations.reduce((sum, allocation) => sum + allocation.amount, 0).toFixed(2)} / {paymentData.amount.toFixed(2)}
-                  </span>
-                </div>
-              </fieldset>
 
               <div>
                 <label htmlFor="finance-payment-reference" className="block text-slate-400 mb-1">Transaction / Reference #</label>
@@ -2340,7 +2442,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                 </button>
                 <button
                   type="submit"
-                  disabled={submitting}
+                  disabled={submitting || paymentNeedsFxRate || paymentExceedsInvoiceBalance}
                   className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold cursor-pointer shadow-md"
                 >
                   {submitting ? 'Recording...' : 'Record Payment'}

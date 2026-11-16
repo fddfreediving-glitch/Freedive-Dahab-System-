@@ -1,8 +1,66 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@font-face {
+  font-family: "Lato";
+  src: url("/fonts/Lato-Regular.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Lato";
+  src: url("/fonts/Lato-Bold.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 700 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Oswald";
+  src: url("/fonts/Oswald-Variable.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 200 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Roboto";
+  src: url("/fonts/Roboto-Variable.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@theme inline {
+  --font-sans: "Lato", system-ui, -apple-system, sans-serif;
+  --font-display: "Oswald", "Lato", system-ui, sans-serif;
+  --font-data: "Roboto", "Lato", system-ui, sans-serif;
+  --color-background: var(--metric-chart-background);
+  --color-foreground: var(--metric-chart-foreground);
+  --color-card: var(--metric-chart-card);
+  --color-card-foreground: var(--metric-chart-foreground);
+  --color-muted: var(--metric-chart-muted);
+  --color-muted-foreground: var(--metric-chart-muted-foreground);
+  --color-popover: var(--metric-chart-popover);
+  --color-popover-foreground: var(--metric-chart-foreground);
+  --color-primary: var(--metric-chart-primary);
+  --color-primary-foreground: var(--metric-chart-primary-foreground);
+  --color-destructive: var(--metric-chart-destructive);
+  --color-border: var(--metric-chart-border);
+  --color-ring: var(--metric-chart-ring);
+  --color-accent: var(--metric-chart-accent);
+  --color-accent-foreground: var(--metric-chart-accent-foreground);
+  --color-chart-1: var(--metric-chart-blue);
+  --color-chart-2: var(--metric-chart-amber);
+  --color-chart-3: var(--metric-chart-red);
+  --color-chart-4: var(--metric-chart-green);
+}
 
 @layer base {
   :root {
-    font-family: 'Manrope', system-ui, -apple-system, sans-serif;
+    font-family: 'Lato', system-ui, -apple-system, sans-serif;
     --ref-primary: #4C8BF5;
     --ref-primary-hover: #3B7BE8;
     --ref-navy: #28334E;
@@ -10,20 +68,71 @@
     --ref-bg: #F4F6FA;
     --ref-card-border: #E8EEF7;
     --ref-text-main: #28334E;
+    --metric-chart-background: #FFFFFF;
+    --metric-chart-foreground: #28334E;
+    --metric-chart-card: #FFFFFF;
+    --metric-chart-muted: #F4F6FA;
+    --metric-chart-muted-foreground: #64748B;
+    --metric-chart-popover: #FFFFFF;
+    --metric-chart-primary: #4C8BF5;
+    --metric-chart-primary-foreground: #FFFFFF;
+    --metric-chart-destructive: #B91C1C;
+    --metric-chart-border: #E2E8F0;
+    --metric-chart-ring: #4C8BF5;
+    --metric-chart-accent: #EFF6FF;
+    --metric-chart-accent-foreground: #1D4ED8;
+    --metric-chart-blue: #2563EB;
+    --metric-chart-amber: #B45309;
+    --metric-chart-red: #B91C1C;
+    --metric-chart-green: #047857;
   }
 
   [dir="rtl"] {
-    font-family: 'Cairo', 'Manrope', system-ui, -apple-system, sans-serif;
+    font-family: 'Cairo', 'Lato', system-ui, -apple-system, sans-serif;
   }
 }
 
-/* Reference signature typography */
+.dark {
+  --metric-chart-background: #1E293B;
+  --metric-chart-foreground: #F1F5F9;
+  --metric-chart-card: #1E293B;
+  --metric-chart-muted: #0F172A;
+  --metric-chart-muted-foreground: #94A3B8;
+  --metric-chart-popover: #1E293B;
+  --metric-chart-primary: #60A5FA;
+  --metric-chart-primary-foreground: #0F172A;
+  --metric-chart-destructive: #FDA4AF;
+  --metric-chart-border: #334155;
+  --metric-chart-ring: #60A5FA;
+  --metric-chart-accent: #334155;
+  --metric-chart-accent-foreground: #F1F5F9;
+  --metric-chart-blue: #60A5FA;
+  --metric-chart-amber: #FBBF24;
+  --metric-chart-red: #F87171;
+  --metric-chart-green: #34D399;
+}
+
+.cash-trend-chart [role="tab"] {
+  color: var(--metric-chart-foreground);
+}
+
+/* Lato keeps dense operational screens readable; Oswald is reserved for headings. */
 body {
-  font-family: 'Manrope', system-ui, -apple-system, sans-serif;
+  font-family: 'Lato', system-ui, -apple-system, sans-serif;
   background-color: #F4F6FA;
   color: #28334E;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+h1,
+h2 {
+  font-family: 'Oswald', 'Lato', system-ui, sans-serif;
+  font-weight: 600;
+}
+
+.font-data {
+  font-family: 'Roboto', 'Lato', system-ui, sans-serif;
 }
 
 .dark body {

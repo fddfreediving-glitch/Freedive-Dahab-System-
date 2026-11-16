@@ -15,12 +15,12 @@ import {
 } from '../types';
 import { apiRequest } from '../api';
 import { NavTab } from './Navigation';
-import { getFinancePeriodSummary, getInvoiceServiceMix, InvoiceServiceGroup } from '../utils/financeAnalytics';
+import { getFinanceAccountActivity, getFinancePeriodSummary, getInvoiceServiceMix, InvoiceServiceGroup } from '../utils/financeAnalytics';
 import { getTodayActivityCapacity } from '../utils/dashboardAnalytics';
+import MetricTrendChart, { type MetricRange, type MetricSeries } from './ui/metric-switcher-trend-chart';
 
 interface DashboardViewProps {
   currentUser: User | null;
-  students: Student[];
   sessions: CourseSession[];
   activities: DailyActivity[];
   equipment: Equipment[];
@@ -45,17 +45,35 @@ const formatDate = (value: string) =>
 
 const formatMoney = (amount: number, currency: string) => {
   const formattedAmount = amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return ['EUR', 'USD', 'EGP'].includes(currency)
+  return ['EUR', 'USD', 'EGP', 'GBP'].includes(currency)
     ? new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 2 }).format(amount)
     : `${currency} ${formattedAmount}`;
 };
 
-const cashCurrencies: (keyof FinanceOpeningBalances)[] = ['EUR', 'USD', 'EGP'];
+const cashCurrencies: (keyof FinanceOpeningBalances)[] = ['EUR', 'USD', 'EGP', 'GBP'];
+const cashCurrencyStyles: Record<keyof FinanceOpeningBalances, string> = {
+  EUR: 'border-blue-200 bg-blue-50 text-blue-950 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-100',
+  USD: 'border-emerald-200 bg-emerald-50 text-emerald-950 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-100',
+  EGP: 'border-amber-200 bg-amber-50 text-amber-950 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100',
+  GBP: 'border-violet-200 bg-violet-50 text-violet-950 dark:border-violet-900 dark:bg-violet-950/40 dark:text-violet-100',
+};
 const financePeriodOptions = [
   { days: 7 as const, label: '7 days' },
   { days: 30 as const, label: '30 days' },
   { days: 90 as const, label: '90 days' },
 ];
+const cashTrendRangeOptions: MetricRange[] = [
+  { id: '7d', label: '7D', days: 7 },
+  { id: '14d', label: '14D', days: 14 },
+  { id: '30d', label: '30D', days: 30 },
+  { id: '90d', label: '90D', days: 90 },
+];
+const cashMetricStyles = {
+  opening: 'border-blue-200 bg-blue-50 text-blue-950 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-100',
+  received: 'border-emerald-200 bg-emerald-50 text-emerald-950 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-100',
+  expenses: 'border-rose-200 bg-rose-50 text-rose-950 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-100',
+  movement: 'border-amber-200 bg-amber-50 text-amber-950 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100',
+};
 const serviceMixColors: Record<InvoiceServiceGroup, string> = {
   training: '#2563EB',
   activities: '#059669',
@@ -109,7 +127,6 @@ interface FinanceActivityItem {
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
   currentUser,
-  students,
   sessions,
   activities,
   equipment,
@@ -125,12 +142,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const nextWeek = dateOnly(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
   const canSeeFinance = ['owner', 'finance'].includes(currentUser?.role || '');
   const [cashSummary, setCashSummary] = useState<FinanceCashSummary | null>(null);
-  const [openingBalances, setOpeningBalances] = useState<FinanceOpeningBalances>({ EUR: 0, USD: 0, EGP: 0 });
+  const [openingBalances, setOpeningBalances] = useState<FinanceOpeningBalances>({ EUR: 0, USD: 0, EGP: 0, GBP: 0 });
   const [cashLoading, setCashLoading] = useState(canSeeFinance);
   const [cashSaving, setCashSaving] = useState(false);
   const [cashError, setCashError] = useState<string | null>(null);
   const [cashSaved, setCashSaved] = useState(false);
   const [financeChartCurrency, setFinanceChartCurrency] = useState<keyof FinanceOpeningBalances>('EUR');
+  const [cashTrendRangeId, setCashTrendRangeId] = useState('30d');
   const [financeChartDays, setFinanceChartDays] = useState<7 | 30 | 90>(30);
   const [financeRefreshing, setFinanceRefreshing] = useState(false);
   const [financeRefreshError, setFinanceRefreshError] = useState<string | null>(null);
@@ -229,8 +247,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     [inquiries],
   );
   const lowStock = equipment.filter((item) => item.quantity_available <= item.low_stock_threshold);
-  const openInquiries = inquiries.filter((inquiry) => !['booked', 'closed_lost'].includes(inquiry.status)).length;
-  const activeStudents = students.filter((student) => student.status === 'active').length;
   const todayActivityCapacity = useMemo(
     () => getTodayActivityCapacity(activities, today),
     [activities, today],
@@ -291,10 +307,82 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     () => getFinancePeriodSummary(invoices, expenses, financeChartCurrency, today, financeChartDays),
     [expenses, financeChartCurrency, financeChartDays, invoices, today],
   );
+  const financeTrendSummary = useMemo(
+    () => getFinancePeriodSummary(invoices, expenses, financeChartCurrency, today, 180),
+    [expenses, financeChartCurrency, invoices, today],
+  );
+  const cashTrendRange = cashTrendRangeOptions.find((range) => range.id === cashTrendRangeId) || cashTrendRangeOptions[2];
+  const financeTrendDates = useMemo(
+    () => financeTrendSummary.points.map((point) => new Date(`${point.date}T12:00:00`)),
+    [financeTrendSummary.points],
+  );
+  const financeTrendMetrics = useMemo<MetricSeries[]>(() => {
+    const points = financeTrendSummary.points;
+    const currentStart = points.length - cashTrendRange.days;
+    const previousWindow = (values: number[]) => values.map((_, index) => (
+      index >= currentStart ? values[index - cashTrendRange.days] ?? 0 : 0
+    ));
+    const series: Array<{
+      id: string;
+      label: string;
+      values: number[];
+      color: string;
+      compare: boolean;
+      higherIsBetter?: boolean;
+    }> = [
+      {
+        id: 'receipts',
+        label: 'Receipts',
+        values: points.map((point) => point.income),
+        color: 'var(--color-chart-1)',
+        compare: true,
+        higherIsBetter: true,
+      },
+      {
+        id: 'adjustments',
+        label: 'Adjustments',
+        values: points.map((point) => point.adjustments),
+        color: 'var(--color-chart-2)',
+        compare: false,
+      },
+      {
+        id: 'expenses',
+        label: 'Expenses',
+        values: points.map((point) => point.expenses),
+        color: 'var(--color-chart-3)',
+        compare: true,
+        higherIsBetter: false,
+      },
+      {
+        id: 'operating-net',
+        label: 'Operating net',
+        values: points.map((point) => point.income + point.adjustments - point.expenses),
+        color: 'var(--color-chart-4)',
+        compare: false,
+      },
+    ];
+
+    return series.map((item): MetricSeries => ({
+      id: item.id,
+      label: item.label,
+      current: item.values,
+      ...(item.compare ? { previous: previousWindow(item.values) } : {}),
+      color: item.color,
+      unit: 'currency',
+      currency: financeChartCurrency,
+      aggregate: 'sum',
+      ...(item.higherIsBetter === undefined ? {} : { higherIsBetter: item.higherIsBetter }),
+      format: (value) => formatMoney(value, financeChartCurrency),
+    }));
+  }, [cashTrendRange.days, financeChartCurrency, financeTrendSummary.points]);
   const financeChartStartDate = financeChart.points[0]?.date || today;
   const serviceMix = useMemo(
     () => getInvoiceServiceMix(invoices, financeChartCurrency, financeChartStartDate, today),
     [financeChartCurrency, financeChartStartDate, invoices, today],
+  );
+  const financeAccountActivity = useMemo(
+    () => getFinanceAccountActivity(invoices, expenses, financeChartCurrency, financeChartStartDate, today),
+    [expenses, financeChartCurrency, financeChartStartDate, invoices, today],
   );
   const serviceMixTotal = serviceMix.reduce((total, item) => total + item.amount, 0);
   const inquiryPipeline: Array<{ status: Inquiry['status']; label: string; count: number }> = [
@@ -343,13 +431,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     setHoveredRevenueIndex((current) => current === index ? current : index);
   };
 
-  const metrics = [
-    { label: 'Students', value: students.length, detail: `${activeStudents} active`, tab: 'students_crm' as NavTab },
-    { label: 'Open inquiries', value: openInquiries, detail: 'Not yet booked or closed', tab: 'students_crm' as NavTab },
-    { label: 'Next 7 days', value: upcoming.length, detail: 'Sessions and activities', tab: 'calendar' as NavTab },
-    { label: 'Gear at low stock', value: lowStock.length, detail: 'At or below restock threshold', tab: 'equipment' as NavTab },
-  ];
-
   return (
     <div className="space-y-7 pb-8">
       <header className="flex flex-col gap-4 border-b border-[#E8EEF7] pb-5 dark:border-slate-800 sm:flex-row sm:items-end sm:justify-between">
@@ -378,23 +459,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </button>
         </div>
       </header>
-
-      <section aria-label="Operational totals" className="overflow-hidden rounded-2xl border border-[#E8EEF7] bg-white dark:border-slate-800 dark:bg-[#1E293B]">
-        <dl className="grid grid-cols-2 divide-x divide-y divide-[#E8EEF7] dark:divide-slate-800 lg:grid-cols-4 lg:divide-y-0">
-          {metrics.map((metric) => (
-            <button
-              key={metric.label}
-              type="button"
-              onClick={() => onNavigate(metric.tab)}
-              className="min-w-0 p-4 text-left transition-colors hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[#4C8BF5] dark:hover:bg-slate-800/60 sm:p-5"
-            >
-              <dt className="text-sm font-semibold text-slate-600 dark:text-slate-400">{metric.label}</dt>
-              <span className="mt-1 block text-2xl font-bold tabular-nums text-[#28334E] dark:text-white">{metric.value}</span>
-              <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">{metric.detail}</span>
-            </button>
-          ))}
-        </dl>
-      </section>
 
       <section
         aria-labelledby="dashboard-todays-capacity-title"
@@ -450,7 +514,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <h2 id="dashboard-cash-title" className="text-lg font-bold text-[#28334E] dark:text-white">Current cash position</h2>
-              <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">Opening balance + recorded payments − recorded expenses. Currencies are not converted.</p>
+              <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">Balances include receipts, expenses, payment adjustments, and account movements. Transfers and exchanges affect balances but are not income or expenses; currencies are not converted.</p>
             </div>
             <button
               type="button"
@@ -469,27 +533,73 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           {cashLoading && <p role="status" aria-live="polite" className="text-sm text-slate-600 dark:text-slate-400">Loading cash position…</p>}
           {!cashLoading && cashSummary && (
             <>
-              <div className="grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 {cashCurrencies.map((currency) => (
-                  <article key={currency} className="rounded-xl border border-[#E8EEF7] bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-900/40">
-                    <h3 className="text-sm font-bold text-slate-600 dark:text-slate-300">{currency}</h3>
-                    <p className="mt-1 text-2xl font-extrabold tabular-nums text-[#28334E] dark:text-white">
+                  <article key={currency} className={`rounded-xl border p-4 ${cashCurrencyStyles[currency]}`}>
+                    <h3 className="text-sm font-bold">{currency}</h3>
+                    <p className="mt-1 text-2xl font-extrabold tabular-nums">
                       {formatMoney(cashSummary.current_balances[currency], currency)}
                     </p>
-                    <dl className="mt-3 space-y-1 text-xs text-slate-600 dark:text-slate-400">
-                      <div className="flex justify-between gap-2"><dt>Opening balance</dt><dd className="tabular-nums">{formatMoney(cashSummary.opening_balances[currency], currency)}</dd></div>
-                      <div className="flex justify-between gap-2"><dt>Payments recorded</dt><dd className="tabular-nums">+{formatMoney(cashSummary.income_by_currency[currency], currency)}</dd></div>
-                      <div className="flex justify-between gap-2"><dt>Expenses recorded</dt><dd className="tabular-nums">−{formatMoney(cashSummary.expenses_by_currency[currency], currency)}</dd></div>
+                    <dl className="mt-4 grid grid-cols-2 gap-2 text-xs">
+                      <div className={`min-w-0 rounded-lg border p-2.5 ${cashMetricStyles.opening}`}>
+                        <dt className="font-semibold">Opening</dt>
+                        <dd className="mt-1 break-words font-bold tabular-nums">{formatMoney(cashSummary.opening_balances[currency], currency)}</dd>
+                      </div>
+                      <div className={`min-w-0 rounded-lg border p-2.5 ${cashMetricStyles.received}`}>
+                        <dt className="font-semibold">Received</dt>
+                        <dd className="mt-1 break-words font-bold tabular-nums">+{formatMoney(cashSummary.income_by_currency[currency], currency)}</dd>
+                      </div>
+                      <div className={`min-w-0 rounded-lg border p-2.5 ${cashMetricStyles.expenses}`}>
+                        <dt className="font-semibold">Expenses</dt>
+                        <dd className="mt-1 break-words font-bold tabular-nums">−{formatMoney(cashSummary.expenses_by_currency[currency], currency)}</dd>
+                      </div>
+                      <div className={`min-w-0 rounded-lg border p-2.5 ${cashMetricStyles.movement}`}>
+                        <dt className="font-semibold">Net movement</dt>
+                        <dd className="mt-1 break-words font-bold tabular-nums">{formatMoney(cashSummary.current_balances[currency] - cashSummary.opening_balances[currency], currency)}</dd>
+                      </div>
                     </dl>
                   </article>
                 ))}
               </div>
 
+              <div className="flex flex-col gap-3 border-t border-[#E8EEF7] pt-4 dark:border-slate-800 sm:flex-row sm:items-end sm:justify-between">
+                <p className="text-sm text-slate-600 dark:text-slate-400">The selected currency applies to all dashboard finance charts.</p>
+                <div className="w-full sm:w-40">
+                  <label htmlFor="dashboard-finance-currency" className="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">Chart currency</label>
+                  <select
+                    id="dashboard-finance-currency"
+                    value={financeChartCurrency}
+                    onChange={(event) => setFinanceChartCurrency(event.target.value as keyof FinanceOpeningBalances)}
+                    className="min-h-10 w-full rounded-lg border border-[#E2E8F0] bg-white px-3 text-sm text-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#4C8BF5] dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                  >
+                    {cashCurrencies.map((currency) => <option key={currency} value={currency}>{currency}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              <MetricTrendChart
+                title="Cash activity"
+                description="Daily receipts, adjustments, expenses, and net operating flow. Internal transfers and exchanges are excluded from operating totals."
+                dates={financeTrendDates}
+                metrics={financeTrendMetrics}
+                ranges={cashTrendRangeOptions}
+                rangeId={cashTrendRangeId}
+                onRangeChange={setCashTrendRangeId}
+                defaultMetricId="receipts"
+                defaultRangeId="30d"
+                height={260}
+                showComparison
+                showTable
+                showExport
+                yAxis="auto"
+                className="cash-trend-chart !border-0 !bg-transparent !p-0 !shadow-none"
+              />
+
               <form onSubmit={handleSaveCashBalances} className="border-t border-[#E8EEF7] pt-4 dark:border-slate-800">
                 <fieldset disabled={cashSaving}>
                   <legend className="text-sm font-semibold text-[#28334E] dark:text-white">Edit opening cash balances</legend>
                   <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">Enter the starting cash amounts for each currency. This does not change recorded payments or expenses.</p>
-                  <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                     {cashCurrencies.map((currency) => (
                       <div key={currency}>
                         <label htmlFor={`opening-balance-${currency}`} className="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">Opening {currency}</label>
@@ -536,7 +646,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 Daily payments received compared with the average for the selected period.
               </p>
             </div>
-            <div className="grid gap-3 sm:grid-cols-[minmax(8rem,1fr)_minmax(8rem,1fr)_auto] xl:w-auto">
+            <div className="grid gap-3 sm:grid-cols-[minmax(10rem,1fr)_auto] xl:w-auto">
               <div>
                 <label htmlFor="dashboard-finance-period" className="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">Reporting period</label>
                 <select
@@ -549,17 +659,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   className="min-h-10 w-full rounded-lg border border-[#E2E8F0] bg-white px-3 text-sm text-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#4C8BF5] dark:border-slate-700 dark:bg-slate-900 dark:text-white"
                 >
                   {financePeriodOptions.map((option) => <option key={option.days} value={option.days}>{option.label}</option>)}
-                </select>
-              </div>
-              <div>
-                <label htmlFor="dashboard-finance-currency" className="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">Currency</label>
-                <select
-                  id="dashboard-finance-currency"
-                  value={financeChartCurrency}
-                  onChange={(event) => setFinanceChartCurrency(event.target.value as keyof FinanceOpeningBalances)}
-                  className="min-h-10 w-full rounded-lg border border-[#E2E8F0] bg-white px-3 text-sm text-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#4C8BF5] dark:border-slate-700 dark:bg-slate-900 dark:text-white"
-                >
-                  {cashCurrencies.map((currency) => <option key={currency} value={currency}>{currency}</option>)}
                 </select>
               </div>
               <button
@@ -736,7 +835,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           </div>
 
-          <dl className="grid grid-cols-2 divide-x divide-y divide-[#E8EEF7] overflow-hidden rounded-xl border border-[#E8EEF7] dark:divide-slate-800 dark:border-slate-800 lg:grid-cols-4 lg:divide-y-0">
+          <dl className="grid grid-cols-2 divide-x divide-y divide-[#E8EEF7] overflow-hidden rounded-xl border border-[#E8EEF7] dark:divide-slate-800 dark:border-slate-800 sm:grid-cols-3 xl:grid-cols-6 xl:divide-y-0">
             <div className="p-3 sm:p-4">
               <dt className="text-xs font-semibold text-slate-600 dark:text-slate-400">Payments received</dt>
               <dd className="mt-1 text-lg font-bold tabular-nums text-[#28334E] dark:text-white">{formatMoney(financeChart.income, financeChartCurrency)}</dd>
@@ -746,14 +845,64 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <dd className="mt-1 text-lg font-bold tabular-nums text-red-700 dark:text-red-300">{formatMoney(financeChart.expenses, financeChartCurrency)}</dd>
             </div>
             <div className="p-3 sm:p-4">
+              <dt className="text-xs font-semibold text-slate-600 dark:text-slate-400">Refunds / corrections</dt>
+              <dd className={`mt-1 text-lg font-bold tabular-nums ${financeChart.adjustments < 0 ? 'text-amber-700 dark:text-amber-300' : 'text-[#28334E] dark:text-white'}`}>{formatMoney(financeChart.adjustments, financeChartCurrency)}</dd>
+            </div>
+            <div className="p-3 sm:p-4">
               <dt className="text-xs font-semibold text-slate-600 dark:text-slate-400">Net cash flow</dt>
               <dd className={`mt-1 text-lg font-bold tabular-nums ${financeChart.net < 0 ? 'text-red-700 dark:text-red-300' : 'text-emerald-700 dark:text-emerald-300'}`}>{formatMoney(financeChart.net, financeChartCurrency)}</dd>
+            </div>
+            <div className="p-3 sm:p-4">
+              <dt className="text-xs font-semibold text-slate-600 dark:text-slate-400">Customer balances due</dt>
+              <dd className="mt-1 text-lg font-bold tabular-nums text-[#28334E] dark:text-white">{formatMoney(financeChart.outstanding, financeChartCurrency)}</dd>
             </div>
             <div className="p-3 sm:p-4">
               <dt className="text-xs font-semibold text-slate-600 dark:text-slate-400">Overdue invoice balance</dt>
               <dd className="mt-1 text-lg font-bold tabular-nums text-amber-700 dark:text-amber-300">{formatMoney(financeChart.overdue, financeChartCurrency)}</dd>
             </div>
           </dl>
+
+          <section aria-labelledby="dashboard-account-activity-title" className="space-y-3 border-t border-[#E8EEF7] pt-5 dark:border-slate-800">
+            <div>
+              <h3 id="dashboard-account-activity-title" className="text-base font-bold text-[#28334E] dark:text-white">Activity by payment account and method</h3>
+              <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+                Recorded receipts, adjustments, and expenses in {financeChartCurrency} over the selected {financeChartDays}-day period. Transfers are excluded from income and expenses.
+              </p>
+            </div>
+            {financeAccountActivity.length > 0 ? (
+              <div className="overflow-x-auto rounded-xl border border-[#E8EEF7] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#4C8BF5] dark:border-slate-800" tabIndex={0} aria-label="Scrollable account activity table">
+                <table className="min-w-[720px] w-full text-left text-sm">
+                  <caption className="sr-only">Account and payment method totals in {financeChartCurrency} from {formatDate(financeChartStartDate)} through {formatDate(today)}</caption>
+                  <thead className="bg-slate-50 text-xs text-slate-600 dark:bg-slate-900/50 dark:text-slate-300">
+                    <tr>
+                      <th scope="col" className="px-3 py-2">Account</th>
+                      <th scope="col" className="px-3 py-2">Payment method</th>
+                      <th scope="col" className="px-3 py-2 text-right">Receipts</th>
+                      <th scope="col" className="px-3 py-2 text-right">Refunds / corrections</th>
+                      <th scope="col" className="px-3 py-2 text-right">Expenses</th>
+                      <th scope="col" className="px-3 py-2 text-right">Net activity</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#E8EEF7] dark:divide-slate-800">
+                    {financeAccountActivity.map((item) => (
+                      <tr key={`${item.account}:${item.paymentMethod}`}>
+                        <th scope="row" className="px-3 py-2 font-semibold text-slate-700 dark:text-slate-200">{item.account}</th>
+                        <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{item.paymentMethod}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-slate-700 dark:text-slate-200">{formatMoney(item.income, financeChartCurrency)}</td>
+                        <td className={`px-3 py-2 text-right tabular-nums ${item.adjustments < 0 ? 'text-amber-700 dark:text-amber-300' : 'text-slate-700 dark:text-slate-200'}`}>{formatMoney(item.adjustments, financeChartCurrency)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-red-700 dark:text-red-300">{formatMoney(item.expenses, financeChartCurrency)}</td>
+                        <td className={`px-3 py-2 text-right font-semibold tabular-nums ${item.net < 0 ? 'text-red-700 dark:text-red-300' : 'text-emerald-700 dark:text-emerald-300'}`}>{formatMoney(item.net, financeChartCurrency)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="rounded-xl border border-dashed border-slate-300 px-4 py-6 text-center text-sm text-slate-600 dark:border-slate-700 dark:text-slate-400">
+                No payments or expenses with an account were recorded in this period and currency.
+              </p>
+            )}
+          </section>
 
           <figure aria-labelledby="dashboard-finance-chart-caption">
             <div className="flex flex-wrap items-center gap-x-5 gap-y-2 pb-3 text-xs font-medium text-slate-600 dark:text-slate-300">
@@ -804,7 +953,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </svg>
             </div>
             <figcaption id="dashboard-finance-chart-caption" className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-              Payments are grouped by payment date; expenses are grouped by expense date. All amounts are in {financeChartCurrency}.
+              Payments and adjustments use their recorded dates; expenses use the expense date. Adjustments appear in the daily table, not the chart. All amounts are in {financeChartCurrency}.
             </figcaption>
           </figure>
 
@@ -814,15 +963,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </summary>
             <div className="mt-2 max-h-64 overflow-auto">
               <table className="w-full text-left text-sm">
-                <caption className="sr-only">Daily payments and expenses in {financeChartCurrency} over the last {financeChartDays} days</caption>
+                <caption className="sr-only">Daily payments, refunds or corrections, and expenses in {financeChartCurrency} over the last {financeChartDays} days</caption>
                 <thead className="sticky top-0 bg-white text-xs text-slate-500 dark:bg-[#1E293B] dark:text-slate-400">
-                  <tr><th scope="col" className="py-2 pr-3">Date</th><th scope="col" className="px-3 py-2 text-right">Payments</th><th scope="col" className="py-2 pl-3 text-right">Expenses</th></tr>
+                  <tr><th scope="col" className="py-2 pr-3">Date</th><th scope="col" className="px-3 py-2 text-right">Payments</th><th scope="col" className="px-3 py-2 text-right">Refunds / corrections</th><th scope="col" className="py-2 pl-3 text-right">Expenses</th></tr>
                 </thead>
                 <tbody className="divide-y divide-[#E8EEF7] dark:divide-slate-800">
                   {financeChart.points.map((point) => (
                     <tr key={point.date}>
                       <th scope="row" className="py-2 pr-3 font-medium text-slate-700 dark:text-slate-300">{formatDate(point.date)}</th>
                       <td className="px-3 py-2 text-right tabular-nums text-slate-700 dark:text-slate-300">{formatMoney(point.income, financeChartCurrency)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums text-amber-700 dark:text-amber-300">{formatMoney(point.adjustments, financeChartCurrency)}</td>
                       <td className="py-2 pl-3 text-right tabular-nums text-slate-700 dark:text-slate-300">{formatMoney(point.expenses, financeChartCurrency)}</td>
                     </tr>
                   ))}
@@ -932,7 +1082,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               onClick={() => onNavigate('calendar')}
               className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-lg px-3 text-sm font-semibold text-[#3069C4] hover:bg-blue-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#4C8BF5] dark:text-blue-300 dark:hover:bg-slate-800"
             >
-              Planner <ArrowRight className="h-4 w-4" aria-hidden="true" />
+              Google Calendar <ArrowRight className="h-4 w-4" aria-hidden="true" />
             </button>
           </div>
           {upcoming.length ? (
@@ -950,7 +1100,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </ul>
           ) : (
             <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-5 py-9 text-sm text-slate-600 dark:border-slate-700 dark:bg-[#1E293B] dark:text-slate-400">
-              Nothing is scheduled for the next seven days. Use the planner to add a course or activity.
+              No ERP sessions or activities are scheduled for the next seven days.
             </div>
           )}
         </section>

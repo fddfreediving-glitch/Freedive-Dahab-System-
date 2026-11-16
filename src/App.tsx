@@ -18,6 +18,8 @@ import {
   CustomerRequestInput,
   PaymentInput,
   Expense,
+  PosCatalogItem,
+  PosCatalogItemInput,
   PayrollPeriod,
   PayrollRecord,
   Equipment,
@@ -33,7 +35,7 @@ import { NavTab } from './components/Navigation';
 import { DashboardView } from './components/DashboardView';
 import { StudentsCrmView } from './components/StudentsCrmView';
 import { CoursesView } from './components/CoursesView';
-import { CalendarView } from './components/CalendarView';
+import { GoogleCalendarView } from './components/GoogleCalendarView';
 import { DailyOpsView } from './components/DailyOpsView';
 import { StaffView } from './components/StaffView';
 import { FinanceView } from './components/FinanceView';
@@ -43,6 +45,7 @@ import { AuditView } from './components/AuditView';
 import { SettingsView } from './components/SettingsView';
 import { NotificationsView } from './components/NotificationsView';
 import { PosView } from './components/PosView';
+import { BrandMark } from './components/BrandMark';
 import {
   Waves,
   Shield,
@@ -79,6 +82,8 @@ export default function App() {
   const [selectedPayrollPeriodId, setSelectedPayrollPeriodId] = useState<string>('');
   const [equipment, setEquipment] = useState<Equipment[]>([]);
   const [equipmentCheckouts, setEquipmentCheckouts] = useState<EquipmentCheckout[]>([]);
+  const [posCatalogItems, setPosCatalogItems] = useState<PosCatalogItem[]>([]);
+  const [posCatalogError, setPosCatalogError] = useState<string | null>(null);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
 
   // Login form state
@@ -115,6 +120,7 @@ export default function App() {
         staffRes,
         equipmentRes,
         equipmentCheckoutsRes,
+        posCatalogRes,
       ] = await Promise.all([
         apiRequest<Student[]>('/api/students').catch(() => []),
         apiRequest<Inquiry[]>('/api/inquiries').catch(() => []),
@@ -125,6 +131,18 @@ export default function App() {
         apiRequest<User[]>('/api/users').catch(() => []),
         apiRequest<Equipment[]>('/api/equipment').catch(() => []),
         apiRequest<EquipmentCheckout[]>('/api/equipment/checkouts').catch(() => []),
+        apiRequest<PosCatalogItem[]>('/api/pos/catalog')
+          .then((items) => {
+            if (!Array.isArray(items)) {
+              throw new Error('The POS catalogue response was invalid.');
+            }
+            setPosCatalogError(null);
+            return items;
+          })
+          .catch((error) => {
+            setPosCatalogError(error instanceof Error ? error.message : 'The POS catalogue could not be loaded.');
+            return [];
+          }),
       ]);
 
       setStudents(studentsRes);
@@ -136,7 +154,7 @@ export default function App() {
       setStaff(staffRes);
       setEquipment(equipmentRes);
       setEquipmentCheckouts(equipmentCheckoutsRes);
-
+      setPosCatalogItems(posCatalogRes);
       // Load restricted data based on current user role
       if (currentUser && ['owner', 'finance'].includes(currentUser.role)) {
         const [invoicesRes, requestsRes, expensesRes] = await Promise.all([
@@ -228,8 +246,10 @@ export default function App() {
       setCurrentUser(res.user);
 
       // Route away if current tab is restricted
-      if (['finance', 'payroll', 'audit', 'pos'].includes(activeTab)) {
+      if (['finance', 'reports', 'payroll', 'audit', 'pos'].includes(activeTab)) {
         if (activeTab === 'audit' && targetRole !== 'owner') {
+          setActiveTab('dashboard');
+        } else if (activeTab === 'reports' && !['owner', 'finance'].includes(targetRole)) {
           setActiveTab('dashboard');
         } else if (activeTab === 'pos' && !['owner', 'finance', 'front_desk_crm'].includes(targetRole)) {
           setActiveTab('dashboard');
@@ -317,12 +337,7 @@ export default function App() {
       <div className="min-h-screen bg-[#F4F6FA] dark:bg-[#0F172A] flex items-center justify-center p-4">
         <div className="w-full max-w-md bg-white dark:bg-[#1E293B] border border-[#E8EEF7] dark:border-slate-800 rounded-2xl shadow-xl p-8 space-y-6">
           <div className="text-center space-y-2">
-            <div className="w-14 h-14 rounded-2xl bg-[#4C8BF5] flex items-center justify-center mx-auto text-white shadow-lg shadow-blue-500/20">
-              <svg className="w-8 h-8" viewBox="0 0 40 40" fill="none">
-                <path d="M20 5L31 11.5V23L20 29.5L9 23V11.5L20 5Z" stroke="white" strokeWidth="3" strokeLinejoin="round" />
-                <path d="M14 17L20 13.5L26 17V24L20 27.5L14 24V17Z" fill="white" />
-              </svg>
-            </div>
+            <BrandMark className="mx-auto h-14 w-14 rounded-2xl" />
             <h1 className="text-2xl font-black tracking-tight text-[#28334E] dark:text-white">
               Freedive Dahab
             </h1>
@@ -476,7 +491,6 @@ export default function App() {
             {activeTab === 'dashboard' && (
               <DashboardView
                 currentUser={currentUser}
-                students={students}
                 sessions={sessions}
                 activities={activities}
                 equipment={equipment}
@@ -551,12 +565,7 @@ export default function App() {
             )}
 
             {activeTab === 'calendar' && (
-              <CalendarView
-                sessions={sessions}
-                activities={activities}
-                instructors={instructorsList}
-                lang={lang}
-              />
+              <GoogleCalendarView />
             )}
 
             {activeTab === 'notifications' && (
@@ -573,8 +582,22 @@ export default function App() {
               <PosView
                 students={students}
                 equipment={equipment}
+                catalogItems={posCatalogItems}
+                catalogError={posCatalogError}
+                userRole={currentUser.role}
                 onCreateCustomerRequest={async (data: CustomerRequestInput) => {
                   await apiRequest('/api/customer-requests', { method: 'POST', body: JSON.stringify(data) });
+                }}
+                onSaveCatalogItem={async (data: PosCatalogItemInput, id?: string) => {
+                  await apiRequest(id ? `/api/pos/catalog/${id}` : '/api/pos/catalog', {
+                    method: id ? 'PATCH' : 'POST',
+                    body: JSON.stringify(data),
+                  });
+                  await loadAllData();
+                }}
+                onArchiveCatalogItem={async (id: string) => {
+                  await apiRequest(`/api/pos/catalog/${id}`, { method: 'DELETE' });
+                  await loadAllData();
                 }}
                 onRefresh={loadAllData}
               />
@@ -619,8 +642,10 @@ export default function App() {
               />
             )}
 
-            {activeTab === 'finance' && (
+            {(activeTab === 'finance' || activeTab === 'reports') && (
               <FinanceView
+                key={activeTab}
+                initialTab={activeTab === 'reports' ? 'history' : undefined}
                 invoices={invoices}
                 customerRequests={customerRequests}
                 expenses={expenses}

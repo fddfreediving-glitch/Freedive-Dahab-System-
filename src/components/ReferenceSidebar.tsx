@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { User, UserRole } from '../types';
 import { Language, translations } from '../i18n';
 import { NavTab } from './Navigation';
+import { BrandMark } from './BrandMark';
 import {
   Users,
   BarChart3,
@@ -21,9 +22,9 @@ import {
   Lock,
   ChevronDown,
   X,
-  Phone,
-  Radio,
+  FileText,
   LifeBuoy,
+  Phone,
 } from 'lucide-react';
 
 interface ReferenceSidebarProps {
@@ -60,46 +61,40 @@ export const ReferenceSidebar: React.FC<ReferenceSidebarProps> = ({
   const canAccessPayroll = ['owner', 'finance', 'hr'].includes(userRole);
   const canAccessAudit = userRole === 'owner';
 
-  // Keep the five daily work areas at the top; less frequent modules remain grouped below.
+  // Keep the six requested daily work areas at the top; less frequent modules remain grouped below.
   const primaryNavItems = [
     {
       id: 'dashboard' as NavTab,
-      label: 'Dashboard',
+      label: 'Daily Dashboard',
       icon: BarChart3,
     },
     {
-      id: 'calendar' as NavTab,
-      label: 'Planner',
-      icon: CalendarIcon,
-    },
-    {
       id: 'finance' as NavTab,
-      label: 'Invoices & Bills',
+      label: 'Daily Finance',
       icon: Receipt,
       locked: !canAccessCustomerRequests,
       lockReason: 'Owner, Finance & Front Desk only',
     },
-    {
-      id: 'notifications' as NavTab,
-      label: 'Notifications',
-      icon: Bell,
-    },
+    { id: 'calendar' as NavTab, label: 'Planner', icon: CalendarIcon },
+    { id: 'students_crm' as NavTab, label: 'Customers', icon: Users },
     {
       id: 'pos' as NavTab,
-      label: 'POS',
+      label: 'Point of Sale',
       icon: DollarSign,
       locked: !canAccessCustomerRequests,
       lockReason: 'Owner, Finance & Front Desk only',
+    },
+    {
+      id: 'reports' as NavTab,
+      label: 'Reports',
+      icon: FileText,
+      locked: !canAccessFinance,
+      lockReason: 'Owner & Finance only',
     },
   ];
 
   // Secondary ERP modules for Freedive Dahab operations
   const erpNavItems = [
-    {
-      id: 'students_crm' as NavTab,
-      label: 'Contacts',
-      icon: Users,
-    },
     {
       id: 'daily_ops' as NavTab,
       label: 'Tasks',
@@ -139,6 +134,11 @@ export const ReferenceSidebar: React.FC<ReferenceSidebarProps> = ({
       label: 'Settings',
       icon: SettingsIcon,
     },
+    {
+      id: 'notifications' as NavTab,
+      label: 'Notifications',
+      icon: Bell,
+    },
   ];
 
   return (
@@ -161,36 +161,8 @@ export const ReferenceSidebar: React.FC<ReferenceSidebarProps> = ({
         {/* Top Header / Logo Area */}
         <div className="p-5 pb-4">
           <div className="flex items-center justify-between">
-            {/* Custom Geometric Folded Ribbon Hexagon Logo from Reference Picture */}
             <div className="flex items-center gap-3">
-              <div className="w-11 h-11 relative flex items-center justify-center shrink-0">
-                <svg
-                  viewBox="0 0 48 48"
-                  fill="none"
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="w-full h-full drop-shadow-md"
-                >
-                  {/* Outer geometric folded S-ribbon shape */}
-                  <path
-                    d="M24 4L10 12V22L17 26V16L24 12L34 18V28L24 34L17 30V37L24 41L38 33V23L31 19V29L24 33L14 27V17L24 11L31 15V8L24 4Z"
-                    fill="url(#ref_logo_gradient)"
-                  />
-                  <defs>
-                    <linearGradient
-                      id="ref_logo_gradient"
-                      x1="10"
-                      y1="4"
-                      x2="38"
-                      y2="41"
-                      gradientUnits="userSpaceOnUse"
-                    >
-                      <stop stopColor="#60A5FA" />
-                      <stop offset="0.5" stopColor="#4C8BF5" />
-                      <stop offset="1" stopColor="#38BDF8" />
-                    </linearGradient>
-                  </defs>
-                </svg>
-              </div>
+              <BrandMark />
 
               {!isCollapsed && (
                 <div className="leading-tight truncate">

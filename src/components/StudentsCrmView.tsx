@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Student, Inquiry, UserRole } from '../types';
+import { Student, Inquiry, StudentRegistrationInput, UserRole } from '../types';
 import { Language, translations } from '../i18n';
+import { StudentRegistrationPage } from './StudentRegistrationPage';
 import {
   Users,
   Search,
@@ -28,7 +29,7 @@ interface StudentsCrmViewProps {
   inquiries: Inquiry[];
   userRole: UserRole;
   onRefresh: () => void;
-  onRegisterStudent: (studentData: any) => Promise<void>;
+  onRegisterStudent: (studentData: StudentRegistrationInput) => Promise<void>;
   onUpdateWaiver: (studentId: string, signed: boolean, notes?: string) => Promise<void>;
   onUpdateMedicalClearance: (studentId: string, status: MedicalClearanceStatus) => Promise<void>;
   onCreateInquiry: (inquiryData: any) => Promise<void>;
@@ -59,26 +60,10 @@ export const StudentsCrmView: React.FC<StudentsCrmViewProps> = ({
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [rowsPerPage, setRowsPerPage] = useState<number>(10);
 
-  // Modal states
-  const [isCreateContactModalOpen, setIsCreateContactModalOpen] = useState(false);
+  const [isRegistrationPageOpen, setIsRegistrationPageOpen] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
-
-  // New Student / Contact Form state
-  const [newContact, setNewContact] = useState({
-    first_name: '',
-    last_name: '',
-    email: '',
-    phone: '',
-    company_agency: 'AIDA',
-    lead_status: 'New',
-    certification_level: 'Freediver',
-    total_depth_pb: 0,
-    medical_waiver_signed: false,
-    medical_waiver_date: '',
-    medical_notes: '',
-  });
 
   const isHealthAuthorized = ['owner', 'operations_manager', 'hr'].includes(userRole);
 
@@ -187,7 +172,11 @@ export const StudentsCrmView: React.FC<StudentsCrmViewProps> = ({
       id: s.id,
       name: `${s.first_name} ${s.last_name}`,
       company: s.certification_agency || 'Freedive Dahab',
-      status: s.status === 'active' ? 'New' : s.medical_waiver_signed ? 'Trial' : 'Cannot contact',
+      status: ['lead', 'inquiry'].includes(s.status)
+        ? 'New'
+        : s.medical_waiver_signed
+          ? 'Trial'
+          : 'Cannot contact',
       email: s.email,
       phone: s.phone || '—',
       studentObj: s,
@@ -208,44 +197,18 @@ export const StudentsCrmView: React.FC<StudentsCrmViewProps> = ({
     }));
   };
 
-  const handleCreateContactSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setFormError(null);
-    setSubmitting(true);
-    try {
-      await onRegisterStudent({
-        first_name: newContact.first_name,
-        last_name: newContact.last_name,
-        email: newContact.email,
-        phone: newContact.phone,
-        certification_agency: newContact.company_agency,
-        certification_level: newContact.certification_level,
-        total_depth_pb: newContact.total_depth_pb,
-        medical_waiver_signed: newContact.medical_waiver_signed,
-        medical_waiver_date: newContact.medical_waiver_signed ? newContact.medical_waiver_date : null,
-        medical_notes: newContact.medical_notes,
-      });
-      setIsCreateContactModalOpen(false);
-      setNewContact({
-        first_name: '',
-        last_name: '',
-        email: '',
-        phone: '',
-        company_agency: 'AIDA',
-        lead_status: 'New',
-        certification_level: 'Freediver',
-        total_depth_pb: 0,
-        medical_waiver_signed: false,
-        medical_waiver_date: '',
-        medical_notes: '',
-      });
-      await onRefresh();
-    } catch (err: any) {
-      setFormError(err.message || 'Failed to create contact');
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  if (isRegistrationPageOpen) {
+    return (
+      <StudentRegistrationPage
+        userRole={userRole}
+        onRegister={async (studentData) => {
+          await onRegisterStudent(studentData);
+          await onRefresh();
+        }}
+        onCancel={() => setIsRegistrationPageOpen(false)}
+      />
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -349,10 +312,11 @@ export const StudentsCrmView: React.FC<StudentsCrmViewProps> = ({
             </h1>
 
             <button
-              onClick={() => setIsCreateContactModalOpen(true)}
+              type="button"
+              onClick={() => setIsRegistrationPageOpen(true)}
               className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-[#4C8BF5] hover:bg-[#3B7BE8] text-white font-semibold text-xs shadow-md shadow-blue-500/25 cursor-pointer transition-all active:scale-[0.98]"
             >
-              <span>CREATE CONTACT</span>
+              <span>REGISTER STUDENT</span>
               <Plus className="w-4 h-4" />
             </button>
           </div>
@@ -520,162 +484,6 @@ export const StudentsCrmView: React.FC<StudentsCrmViewProps> = ({
           </div>
         </div>
       </div>
-
-      {/* CREATE CONTACT / STUDENT MODAL */}
-      {isCreateContactModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-[#1E293B] rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-2xl border border-slate-200 dark:border-slate-700">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
-              <h3 className="font-bold text-slate-900 dark:text-white text-base">
-                Create New Contact / Student
-              </h3>
-              <button
-                onClick={() => setIsCreateContactModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 dark:hover:text-white p-1 rounded-lg cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <form onSubmit={handleCreateContactSubmit} className="space-y-3.5 text-xs">
-              {formError && (
-                <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs">
-                  {formError}
-                </div>
-              )}
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-slate-600 dark:text-slate-400 mb-1 font-semibold">
-                    First Name *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={newContact.first_name}
-                    onChange={(e) => setNewContact({ ...newContact, first_name: e.target.value })}
-                    className="w-full bg-[#F8FAFC] dark:bg-slate-800 border border-[#E2E8F0] dark:border-slate-700 rounded-xl p-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-[#4C8BF5]"
-                  />
-                </div>
-                <div>
-                  <label className="block text-slate-600 dark:text-slate-400 mb-1 font-semibold">
-                    Last Name *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={newContact.last_name}
-                    onChange={(e) => setNewContact({ ...newContact, last_name: e.target.value })}
-                    className="w-full bg-[#F8FAFC] dark:bg-slate-800 border border-[#E2E8F0] dark:border-slate-700 rounded-xl p-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-[#4C8BF5]"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-slate-600 dark:text-slate-400 mb-1 font-semibold">
-                    Email Address *
-                  </label>
-                  <input
-                    type="email"
-                    required
-                    value={newContact.email}
-                    onChange={(e) => setNewContact({ ...newContact, email: e.target.value })}
-                    className="w-full bg-[#F8FAFC] dark:bg-slate-800 border border-[#E2E8F0] dark:border-slate-700 rounded-xl p-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-[#4C8BF5]"
-                  />
-                </div>
-                <div>
-                  <label className="block text-slate-600 dark:text-slate-400 mb-1 font-semibold">
-                    Phone / WhatsApp
-                  </label>
-                  <input
-                    type="text"
-                    value={newContact.phone}
-                    onChange={(e) => setNewContact({ ...newContact, phone: e.target.value })}
-                    className="w-full bg-[#F8FAFC] dark:bg-slate-800 border border-[#E2E8F0] dark:border-slate-700 rounded-xl p-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-[#4C8BF5]"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-slate-600 dark:text-slate-400 mb-1 font-semibold">
-                    Company / Freedive Agency
-                  </label>
-                  <input
-                    type="text"
-                    value={newContact.company_agency}
-                    onChange={(e) => setNewContact({ ...newContact, company_agency: e.target.value })}
-                    placeholder="e.g. AIDA, Molchanovs, Apple"
-                    className="w-full bg-[#F8FAFC] dark:bg-slate-800 border border-[#E2E8F0] dark:border-slate-700 rounded-xl p-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-[#4C8BF5]"
-                  />
-                </div>
-                <div>
-                  <label className="block text-slate-600 dark:text-slate-400 mb-1 font-semibold">
-                    Lead Status
-                  </label>
-                  <select
-                    value={newContact.lead_status}
-                    onChange={(e) => setNewContact({ ...newContact, lead_status: e.target.value })}
-                    className="w-full bg-[#F8FAFC] dark:bg-slate-800 border border-[#E2E8F0] dark:border-slate-700 rounded-xl p-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-[#4C8BF5]"
-                  >
-                    <option value="New">New</option>
-                    <option value="Trial">Trial</option>
-                    <option value="Cannot contact">Cannot contact</option>
-                    <option value="Lost">Lost</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 pt-2">
-                <input
-                  type="checkbox"
-                  id="waiver_signed"
-                  checked={newContact.medical_waiver_signed}
-                  onChange={(e) => setNewContact({ ...newContact, medical_waiver_signed: e.target.checked })}
-                  className="rounded border-slate-300 text-[#4C8BF5]"
-                />
-                <label htmlFor="waiver_signed" className="text-slate-700 dark:text-slate-300 cursor-pointer font-medium">
-                  Signed waiver on file
-                </label>
-              </div>
-              {newContact.medical_waiver_signed && (
-                <div>
-                  <label htmlFor="new-student-waiver-date" className="block text-slate-600 dark:text-slate-400 mb-1 font-semibold">
-                    Waiver signature date *
-                  </label>
-                  <input
-                    id="new-student-waiver-date"
-                    type="date"
-                    required
-                    max={new Date().toISOString().slice(0, 10)}
-                    value={newContact.medical_waiver_date}
-                    onChange={(e) => setNewContact({ ...newContact, medical_waiver_date: e.target.value })}
-                    className="w-full bg-[#F8FAFC] dark:bg-slate-800 border border-[#E2E8F0] dark:border-slate-700 rounded-xl p-2.5 text-slate-900 dark:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"
-                  />
-                </div>
-              )}
-
-              <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100 dark:border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setIsCreateContactModalOpen(false)}
-                  className="px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 font-medium cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className="px-5 py-2.5 rounded-xl bg-[#4C8BF5] hover:bg-[#3B7BE8] text-white font-semibold cursor-pointer shadow-md shadow-blue-500/25"
-                >
-                  {submitting ? 'Creating...' : 'Create Contact'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* STUDENT DETAIL DOSSIER MODAL */}
       {selectedStudent && (

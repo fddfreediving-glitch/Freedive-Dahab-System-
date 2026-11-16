@@ -63,8 +63,8 @@ export const NotificationsView: React.FC<NotificationViewProps> = ({
           title: session.course_title || session.course_code || 'Course session',
           detail: `${session.location} · ${session.instructor_name || 'Instructor unassigned'}`,
           date: session.start_date,
-          action: 'Open planner',
-          tab: 'calendar',
+          action: 'Open courses',
+          tab: 'courses',
           urgency: session.start_date === today ? 0 : 1,
         });
       });
@@ -83,8 +83,8 @@ export const NotificationsView: React.FC<NotificationViewProps> = ({
           title: activity.title,
           detail: `${activity.location} · ${activity.start_time} · ${activity.current_pax}/${activity.max_pax} participants`,
           date: activity.activity_date,
-          action: 'Open planner',
-          tab: 'calendar',
+          action: 'Open daily operations',
+          tab: 'daily_ops',
           urgency: activity.activity_date === today ? 0 : 1,
         });
       });
@@ -141,7 +141,7 @@ export const NotificationsView: React.FC<NotificationViewProps> = ({
         <div>
           <h1 className="text-2xl font-extrabold tracking-tight text-[#28334E] dark:text-white">Notifications</h1>
           <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-            Operational follow-ups from the planner, CRM, and equipment room.
+            ERP schedule reminders, CRM follow-ups, and equipment alerts.
           </p>
         </div>
         <p className="text-sm font-semibold text-slate-600 dark:text-slate-300" aria-live="polite">

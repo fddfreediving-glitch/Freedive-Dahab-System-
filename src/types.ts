@@ -46,6 +46,52 @@ export interface Student {
   created_at: string;
 }
 
+export type StudentRegistrationInput = Pick<Student, 'first_name' | 'last_name' | 'email'> &
+  Partial<Omit<Student, 'id' | 'created_at' | 'first_name' | 'last_name' | 'email' | 'medical_waiver_signed'>> & {
+    medical_waiver_signed?: boolean;
+  };
+
+export type PosCatalogGroup =
+  | 'Courses'
+  | 'Packages'
+  | 'Training'
+  | 'Activities'
+  | 'Accommodation'
+  | 'Shop'
+  | 'Gear rental';
+
+export type PosCatalogCurrency = 'EUR' | 'EGP' | 'USD' | 'GBP';
+
+export interface PosCatalogItem {
+  id: string;
+  group: PosCatalogGroup;
+  name: string;
+  category: CustomerRequestItemInput['category'];
+  price: number | null;
+  price_currency: PosCatalogCurrency | null;
+  unit: string | null;
+  description: string | null;
+  tier_minimum_quantity: number | null;
+  tier_unit_price: number | null;
+  stay_discount: number;
+  is_active: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PosCatalogItemInput {
+  group: PosCatalogGroup;
+  name: string;
+  category: CustomerRequestItemInput['category'];
+  price: number | null;
+  price_currency: PosCatalogCurrency | null;
+  unit: string | null;
+  description: string | null;
+  tier_minimum_quantity: number | null;
+  tier_unit_price: number | null;
+  stay_discount: boolean;
+}
+
 export interface Inquiry {
   id: string;
   student_id?: string;
@@ -160,6 +206,7 @@ export interface InvoiceItem {
   quantity: number;
   unit_price: number;
   total_price: number;
+  paid_amount?: number;
   remaining_amount?: number;
   check_in_date?: string | null;
   check_out_date?: string | null;
@@ -282,7 +329,7 @@ export interface PaymentInput {
   payment_date: string;
   reference_number: string;
   notes: string;
-  allocations: Array<{
+  allocations?: Array<{
     item_id: string;
     beneficiary_student_id: string;
     amount: number;
@@ -295,6 +342,8 @@ export interface PaymentAdjustment {
   adjustment_type: 'refund' | 'reversal' | 'correction';
   direction: 'debit' | 'credit';
   amount_cents: number;
+  cash_amount_cents?: number | null;
+  eur_amount_cents?: number | null;
   adjustment_date: string;
   payment_method: string;
   payment_account: string;
@@ -318,6 +367,9 @@ export interface Payment {
   invoice_id: string;
   amount: number;
   currency: string;
+  invoice_amount_cents?: number | null;
+  eur_amount_cents?: number | null;
+  exchange_rate_to_eur?: number | null;
   payment_method: string;
   payment_account?: string;
   payment_date: string;

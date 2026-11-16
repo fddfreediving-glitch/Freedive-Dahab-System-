@@ -14,6 +14,8 @@ interface InvoiceBillDialogProps {
 }
 
 type InvoiceCategory = NonNullable<NonNullable<Invoice['items']>[number]['category']>;
+type InvoiceDraftItem = InvoiceUpdateInput['items'][number] & { source_item_id?: string };
+type InvoiceDraft = Omit<InvoiceUpdateInput, 'items'> & { items: InvoiceDraftItem[] };
 
 const serviceCategories: InvoiceCategory[] = [
   'course',
@@ -65,13 +67,14 @@ const formatInvoiceDate = (value: string) =>
   new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric' })
     .format(new Date(`${value}T12:00:00`));
 
-function getInvoiceDraft(invoice: Invoice): InvoiceUpdateInput {
+function getInvoiceDraft(invoice: Invoice): InvoiceDraft {
   return {
     issue_date: invoice.issue_date,
     due_date: invoice.due_date,
     tax_rate: invoice.tax_rate,
     notes: invoice.notes || '',
     items: (invoice.items || []).map((item) => ({
+      source_item_id: item.id,
       category: item.category || 'other',
       description: item.description,
       quantity: item.quantity,
@@ -125,7 +128,7 @@ export const InvoiceBillDialog: React.FC<InvoiceBillDialogProps> = ({
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [draft, setDraft] = useState(() => getInvoiceDraft(invoice));
+  const [draft, setDraft] = useState<InvoiceDraft>(() => getInvoiceDraft(invoice));
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -143,6 +146,8 @@ export const InvoiceBillDialog: React.FC<InvoiceBillDialogProps> = ({
   const total = subtotal + taxAmount;
   const displayedTotal = editing ? total : invoice.total_amount;
   const balance = Math.max(0, displayedTotal - invoice.paid_amount);
+  const allocatedPaidAmount = (invoice.items || []).reduce((amount, item) => amount + (item.paid_amount || 0), 0);
+  const unallocatedPaymentAmount = Math.max(0, Math.round((invoice.paid_amount - allocatedPaidAmount) * 100) / 100);
   const daysUntilDue = daysUntil(editing ? draft.due_date : invoice.due_date);
   const isOverdue = balance > 0 && daysUntilDue < 0 && invoice.status !== 'cancelled';
   const summary = getBalanceSummary({ ...invoice, total_amount: displayedTotal }, balance, daysUntilDue);
@@ -171,7 +176,10 @@ export const InvoiceBillDialog: React.FC<InvoiceBillDialogProps> = ({
     setError(null);
     setSaving(true);
     try {
-      await onSave(invoice.id, draft);
+      await onSave(invoice.id, {
+        ...draft,
+        items: draft.items.map(({ source_item_id: _sourceItemId, ...item }) => item),
+      });
       setEditing(false);
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'The invoice could not be saved.');
@@ -357,19 +365,25 @@ export const InvoiceBillDialog: React.FC<InvoiceBillDialogProps> = ({
                 )}
               </div>
               <div className="overflow-x-auto border-y border-slate-200">
-                <table className="w-full min-w-[610px] border-collapse text-left text-sm">
+                <table className={`w-full ${editing ? 'min-w-[700px]' : 'min-w-[620px]'} border-collapse text-left text-sm`}>
                   <thead className="border-b border-slate-200 text-xs font-semibold text-slate-500">
                     <tr>
                       <th scope="col" className="py-3 pr-4">Description</th>
-                      <th scope="col" className="w-24 px-3 py-3 text-right">Qty</th>
-                      <th scope="col" className="w-32 px-3 py-3 text-right">Original unit price</th>
-                      <th scope="col" className="w-36 py-3 pl-3 text-right">Line total</th>
+                      <th scope="col" className="w-16 px-2 py-3 text-right">Qty</th>
+                      <th scope="col" className="w-28 px-2 py-3 text-right">Original unit price</th>
+                      <th scope="col" className="w-28 px-2 py-3 text-right">Amount paid</th>
+                      <th scope="col" className="w-32 py-3 pl-2 text-right">Amount remaining</th>
                       {editing && <th scope="col" className="w-20 py-3 pl-3 text-right"><span className="sr-only">Actions</span></th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {draft.items.map((item, index) => (
-                      <tr key={invoice.items?.[index]?.id || `service-${index}`} className="align-top">
+                    {draft.items.map((item, index) => {
+                      const savedItem = invoice.items?.find((candidate) => candidate.id === item.source_item_id)
+                        || (!editing ? invoice.items?.[index] : undefined);
+                      const amountPaid = savedItem?.paid_amount;
+                      const amountRemaining = savedItem?.remaining_amount;
+                      return (
+                      <tr key={item.source_item_id || `service-${index}`} className="align-top">
                         <td className="py-4 pr-4">
                           {editing ? (
                             <div className="grid gap-2 sm:grid-cols-[140px_minmax(180px,1fr)]">
@@ -510,8 +524,11 @@ export const InvoiceBillDialog: React.FC<InvoiceBillDialogProps> = ({
                             />
                           ) : currencyAmount(invoice.currency, item.unit_price)}
                         </td>
+                        <td className="px-3 py-4 text-right tabular-nums text-slate-700">
+                          {typeof amountPaid === 'number' ? currencyAmount(invoice.currency, amountPaid) : '—'}
+                        </td>
                         <td className="py-4 pl-3 text-right font-medium tabular-nums text-slate-900">
-                          {currencyAmount(invoice.currency, Math.round(item.quantity * item.unit_price * 100) / 100)}
+                          {typeof amountRemaining === 'number' ? currencyAmount(invoice.currency, amountRemaining) : '—'}
                         </td>
                         {editing && (
                           <td className="py-4 pl-3 text-right">
@@ -527,13 +544,19 @@ export const InvoiceBillDialog: React.FC<InvoiceBillDialogProps> = ({
                           </td>
                         )}
                       </tr>
-                    ))}
+                      );
+                    })}
                     {draft.items.length === 0 && (
-                      <tr><td colSpan={editing ? 5 : 4} className="py-8 text-center text-sm text-slate-500">Add a service or product to this invoice.</td></tr>
+                      <tr><td colSpan={editing ? 6 : 5} className="py-8 text-center text-sm text-slate-500">Add a service or product to this invoice.</td></tr>
                     )}
                   </tbody>
                 </table>
               </div>
+              {unallocatedPaymentAmount > 0 && (
+                <p className="mt-2 text-xs leading-5 text-slate-500">
+                  {currencyAmount(invoice.currency, unallocatedPaymentAmount)} in payments are not assigned to a single line item and are excluded from per-item amounts.
+                </p>
+              )}
             </section>
 
             <div className="grid gap-8 border-b border-slate-200 pb-7 sm:grid-cols-[minmax(0,1fr)_300px]">
@@ -641,18 +664,32 @@ export const InvoiceBillDialog: React.FC<InvoiceBillDialogProps> = ({
                               )}
                               {payment.allocations?.map((allocation) => (
                                 <span key={allocation.id} className="mt-1 block text-xs text-slate-500">
-                                  {allocation.service_label} for {[allocation.beneficiary_first_name, allocation.beneficiary_last_name].filter(Boolean).join(' ') || 'customer'} · {currencyAmount(payment.currency, allocation.amount_cents / 100)}
+                                  {allocation.service_label} for {[allocation.beneficiary_first_name, allocation.beneficiary_last_name].filter(Boolean).join(' ') || 'customer'} · {currencyAmount(invoice.currency, allocation.amount_cents / 100)}
                                 </span>
                               ))}
                               {payment.adjustments?.map((adjustment) => (
                                 <span key={adjustment.id} className="mt-1 block text-xs text-rose-700">
-                                  {adjustment.adjustment_date} · {adjustment.adjustment_type} ({adjustment.direction}) · {currencyAmount(payment.currency, adjustment.amount_cents / 100)} · {adjustment.reason} · {adjustment.recorded_by_name || 'Staff'}
+                                  {adjustment.adjustment_date} · {adjustment.adjustment_type} ({adjustment.direction}) · {currencyAmount(invoice.currency, adjustment.amount_cents / 100)}
+                                  {typeof adjustment.cash_amount_cents === 'number' && adjustment.cash_amount_cents !== adjustment.amount_cents
+                                    ? ` (${currencyAmount(payment.currency, adjustment.cash_amount_cents / 100)} cash)`
+                                    : ''}
+                                  {' · '}{adjustment.reason} · {adjustment.recorded_by_name || 'Staff'}
                                 </span>
                               ))}
                             </td>
                             <td className="py-3 px-3 text-slate-600">{payment.recorded_by_name || '—'}</td>
                             <td className="py-3 pl-3 text-right font-medium tabular-nums text-slate-900">
                               {currencyAmount(payment.currency, payment.amount)}
+                              {typeof payment.invoice_amount_cents === 'number' && payment.currency !== invoice.currency && (
+                                <span className="mt-1 block text-xs text-slate-500">
+                                  Bill credit: {currencyAmount(invoice.currency, payment.invoice_amount_cents / 100)}
+                                </span>
+                              )}
+                              {typeof payment.eur_amount_cents === 'number' && invoice.currency !== 'EUR' && (
+                                <span className="mt-1 block text-xs text-slate-500">
+                                  EUR equivalent: {currencyAmount('EUR', payment.eur_amount_cents / 100)}
+                                </span>
+                              )}
                               {typeof payment.net_amount === 'number' && payment.net_amount !== payment.amount && (
                                 <span className="mt-1 block text-xs text-slate-500">Net: {currencyAmount(payment.currency, payment.net_amount)}</span>
                               )}

@@ -277,7 +277,7 @@ test('invoice edits reject invalid services and totals below payments already re
   assert.equal(invalidCategory.status, 400);
 });
 
-test('invoice payments require service allocations and refunds append to the original payment', async () => {
+test('invoice payments reject empty allocations, auto-allocate omitted allocations, and append refunds', async () => {
   const student = db.prepare('SELECT id FROM students LIMIT 1').get() as { id: string };
   const now = new Date().toISOString();
   const invoiceId = 'inv_finance_allocation_test';
@@ -311,11 +311,14 @@ test('invoice payments require service allocations and refunds append to the ori
     payment_date: now.slice(0, 10),
     reference_number: 'RECEIPT-50',
     notes: 'Course installment',
-    allocations: [{ item_id: itemId, beneficiary_student_id: student.id, amount: 50 }],
   });
   assert.equal(recorded.status, 201);
   const paymentId = recorded.data.paymentId as string;
   const allocation = db.prepare('SELECT id FROM payment_allocations WHERE payment_id = ?').get(paymentId) as { id: string };
+  assert.equal(
+    (db.prepare('SELECT SUM(amount_cents) AS total FROM payment_allocations WHERE payment_id = ?').get(paymentId) as { total: number }).total,
+    5000,
+  );
 
   const unauthorized = await request(`/finance/payments/${paymentId}/adjustments`, 'POST', {
     adjustment_type: 'refund',
@@ -349,6 +352,8 @@ test('invoice payments require service allocations and refunds append to the ori
   assert.equal(savedInvoice.payments[0].net_amount, 30);
   assert.equal(savedInvoice.payments[0].allocations[0].service_label, 'SSI Freediver course');
   assert.equal(savedInvoice.payments[0].adjustments[0].reason, 'Customer schedule change');
+  assert.equal(savedInvoice.items[0].paid_amount, 30);
+  assert.equal(savedInvoice.items[0].remaining_amount, 70);
   assert.equal(typeof savedInvoice.payments[0].recorded_by_name, 'string');
   assert.ok(savedInvoice.payments[0].recorded_by_name.length > 0);
 
@@ -357,12 +362,21 @@ test('invoice payments require service allocations and refunds append to the ori
     due_date: now.slice(0, 10),
     tax_rate: 0,
     notes: 'Service changed after payment',
-    items: [{ category: 'activity', description: 'Ras Mohamed dive trip', quantity: 1, unit_price: 100 }],
+    items: [
+      { category: 'activity', description: 'Ras Mohamed dive trip', quantity: 1, unit_price: 100 },
+      { category: 'course', description: 'SSI Freediver course', quantity: 1, unit_price: 100 },
+    ],
   });
   assert.equal(edited.status, 200);
   const allocationSnapshot = db.prepare('SELECT invoice_item_id, service_label FROM payment_allocations WHERE id = ?')
     .get(allocation.id) as { invoice_item_id: string | null; service_label: string };
   assert.deepEqual(allocationSnapshot, { invoice_item_id: null, service_label: 'SSI Freediver course' });
+  const relisted = await request('/finance/invoices');
+  const refreshedInvoice = relisted.data.find((entry: any) => entry.id === invoiceId);
+  assert.deepEqual(
+    refreshedInvoice.items.map((item: any) => [item.description, item.paid_amount, item.remaining_amount]),
+    [['Ras Mohamed dive trip', 0, 100], ['SSI Freediver course', 30, 70]],
+  );
 
   assert.throws(
     () => db.prepare('UPDATE payment_allocations SET amount_cents = 1 WHERE id = ?').run(allocation.id),
@@ -382,6 +396,87 @@ test('invoice payments require service allocations and refunds append to the ori
     () => db.prepare('DELETE FROM payment_adjustment_allocations WHERE id = ?').run(adjustmentAllocation.id),
     /append-only/,
   );
+});
+
+test('foreign-currency receipts preserve cash currency and credit EUR invoices at the saved rate', async () => {
+  const unauthorized = await request('/finance/fx-rates', 'PUT', {
+    rates_to_eur: { EUR: 1, USD: 0.9, EGP: 0.02, GBP: 1.15 },
+  }, instructorToken);
+  assert.equal(unauthorized.status, 403);
+
+  const configured = await request('/finance/fx-rates', 'PUT', {
+    rates_to_eur: { EUR: 1, USD: 0.9, EGP: 0.02, GBP: 1.15 },
+  }, ownerToken);
+  assert.equal(configured.status, 200, JSON.stringify(configured.data));
+
+  const student = db.prepare('SELECT id FROM students LIMIT 1').get() as { id: string };
+  const today = new Date().toISOString().slice(0, 10);
+  const invoiceId = 'inv_finance_fx_test';
+  const itemId = 'item_finance_fx_test';
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO invoices (
+      id, invoice_number, student_id, issue_date, due_date, currency, subtotal,
+      tax_rate, tax_amount, total_amount, paid_amount, status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'EUR', 100, 0, 0, 100, 0, 'issued', ?, ?)
+  `).run(invoiceId, 'INV-FINANCE-FX-TEST', student.id, today, today, now, now);
+  db.prepare(`
+    INSERT INTO invoice_items (id, invoice_id, category, description, quantity, unit_price, total_price)
+    VALUES (?, ?, 'course', 'EUR course', 1, 100, 100)
+  `).run(itemId, invoiceId);
+
+  try {
+    const beforeBalances = await request('/finance/cash-balances');
+    const recorded = await request(`/finance/invoices/${invoiceId}/payments`, 'POST', {
+      amount: 1000,
+      currency: 'EGP',
+      customer_id: student.id,
+      payment_method: 'Cash EGP',
+      payment_account: 'FX Test EGP Account',
+      payment_date: today,
+    });
+    assert.equal(recorded.status, 201, JSON.stringify(recorded.data));
+    assert.equal(recorded.data.newPaidAmount, 20);
+
+    const savedPayment = db.prepare(`
+      SELECT amount, currency, invoice_amount_cents, eur_amount_cents, exchange_rate_to_eur
+      FROM payments WHERE id = ?
+    `).get(recorded.data.paymentId) as {
+      amount: number;
+      currency: string;
+      invoice_amount_cents: number;
+      eur_amount_cents: number;
+      exchange_rate_to_eur: number;
+    };
+    assert.deepEqual(savedPayment, {
+      amount: 1000,
+      currency: 'EGP',
+      invoice_amount_cents: 2000,
+      eur_amount_cents: 2000,
+      exchange_rate_to_eur: 0.02,
+    });
+    const autoAllocation = db.prepare('SELECT SUM(amount_cents) AS total FROM payment_allocations WHERE payment_id = ?')
+      .get(recorded.data.paymentId) as { total: number };
+    assert.equal(autoAllocation.total, 2000);
+
+    const invoices = await request('/finance/invoices');
+    const savedInvoice = invoices.data.find((entry: any) => entry.id === invoiceId);
+    assert.equal(savedInvoice.paid_amount, 20);
+    assert.equal(savedInvoice.payments[0].amount, 1000);
+    assert.equal(savedInvoice.payments[0].currency, 'EGP');
+    assert.equal(savedInvoice.payments[0].payment_account, 'FX Test EGP Account');
+    assert.equal(savedInvoice.payments[0].eur_amount_cents, 2000);
+
+    const afterBalances = await request('/finance/cash-balances');
+    assert.equal(
+      afterBalances.data.income_by_currency.EGP - beforeBalances.data.income_by_currency.EGP,
+      1000,
+    );
+  } finally {
+    await request('/finance/fx-rates', 'PUT', {
+      rates_to_eur: { EUR: 1, USD: null, EGP: null, GBP: null },
+    }, ownerToken);
+  }
 });
 
 test('account transfers change balances without appearing as income or expense, and categories stay role-gated', async () => {
