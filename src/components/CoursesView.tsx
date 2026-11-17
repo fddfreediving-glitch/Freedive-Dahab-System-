@@ -120,7 +120,7 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
     student_id: students[0]?.id || '',
     session_id: '',
     course_id: '',
-    price: 320,
+    price: 310,
     currency: 'EUR',
     deposit_amount: 0,
     payment_method: 'Cash EUR',
@@ -169,7 +169,7 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
       student_id: students[0]?.id || '',
       session_id: ses.id,
       course_id: ses.course_id,
-      price: ses.price_eur || 320,
+      price: ses.price_eur || 310,
       currency: 'EUR',
       deposit_amount: 0,
       payment_method: 'Cash EUR',
@@ -258,7 +258,7 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
       {activeTab === 'sessions' && (
         <div className="space-y-4">
           {sessionUpdateError && (
-            <p role="alert" className="rounded-lg bg-rose-950/80 border border-rose-800 px-4 py-3 text-rose-300 text-xs">
+            <p role="alert" className="rounded-lg bg-rose-50 border border-rose-200 px-4 py-3 text-rose-700 text-xs dark:bg-rose-950/80 dark:border-rose-800 dark:text-rose-300">
               {sessionUpdateError}
             </p>
           )}
@@ -276,7 +276,7 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
                     <th className="py-3 px-4 text-right">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-cyan-900/30">
+                <tbody className="divide-y divide-slate-100 dark:divide-cyan-900/30">
                   {sessions.length === 0 ? (
                     <tr>
                       <td colSpan={7} className="text-center py-8 text-slate-500">
@@ -287,39 +287,40 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
                     sessions.map((ses) => {
                       const isFull = (ses.enrolled_count || 0) >= ses.max_capacity;
                       return (
-                        <tr key={ses.id} className="hover:bg-[#0e213b]/60 transition-colors">
+                        <tr key={ses.id} className="hover:bg-slate-50 dark:hover:bg-[#0e213b]/60 transition-colors">
                           <td className="py-3 px-4">
-                            <div className="font-semibold text-white flex items-center gap-2">
+                            <div className="font-semibold text-slate-900 dark:text-white flex items-center gap-2">
                               <span>{ses.course_title}</span>
-                              <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-cyan-950 text-cyan-300 border border-cyan-800">
+                              <span className="whitespace-nowrap px-1.5 py-0.5 rounded text-[10px] font-mono bg-cyan-50 text-cyan-700 border border-cyan-200 dark:bg-cyan-950 dark:text-cyan-300 dark:border-cyan-800">
                                 {ses.course_code}
                               </span>
                             </div>
-                            <div className="text-[11px] text-slate-400 mt-0.5">
-                              {ses.agency} • €{ses.price_eur} / {ses.price_egp?.toLocaleString()} EGP
+                            <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                              {ses.agency} • €{ses.price_eur}
+                              {ses.price_egp ? ` / ${ses.price_egp.toLocaleString()} EGP` : ''}
                             </div>
                           </td>
                           <td className="py-3 px-4">
-                            <div className="font-medium text-slate-200">
+                            <div className="font-medium whitespace-nowrap text-slate-800 dark:text-slate-200">
                               {ses.start_date} to {ses.end_date}
                             </div>
                           </td>
-                          <td className="py-3 px-4 text-cyan-300">
+                          <td className="py-3 px-4 text-cyan-700 dark:text-cyan-300">
                             {ses.location}
                           </td>
                           <td className="py-3 px-4">
                             {ses.instructor_name ? (
-                              <div className="flex items-center gap-1.5 text-slate-200 font-medium">
-                                <UserCheck className="w-3.5 h-3.5 text-cyan-400" />
+                              <div className="flex items-center gap-1.5 text-slate-800 dark:text-slate-200 font-medium">
+                                <UserCheck className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-400" />
                                 <span>{ses.instructor_name}</span>
                               </div>
                             ) : (
-                              <span className="text-amber-400 text-[11px]">Unassigned</span>
+                              <span className="text-amber-600 dark:text-amber-400 text-[11px]">Unassigned</span>
                             )}
                           </td>
                           <td className="py-3 px-4">
                             <div className="flex items-center gap-2">
-                              <div className="w-20 bg-slate-800 rounded-full h-2 overflow-hidden">
+                              <div className="w-20 bg-slate-200 dark:bg-slate-800 rounded-full h-2 overflow-hidden">
                                 <div
                                   className={`h-full rounded-full ${isFull ? 'bg-amber-400' : 'bg-cyan-400'}`}
                                   style={{ width: `${Math.min(100, ((ses.enrolled_count || 0) / ses.max_capacity) * 100)}%` }}
@@ -330,8 +331,8 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
                               </span>
                             </div>
                             {canManageBookingOperations ? (
-                              <label className="mt-2 flex items-center gap-2 text-[10px] text-slate-400">
-                                <span>Buoys (limit configured in Settings)</span>
+                              <label className="mt-2 flex items-center gap-2 text-[10px] text-slate-500 dark:text-slate-400">
+                                <span title="The number of divers per buoy is configured in Settings">Buoys</span>
                                 <input
                                   aria-label={`Assigned buoys for ${ses.course_title}`}
                                   type="number"
@@ -345,17 +346,17 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
                                       void saveSessionBuoyCount(ses.id, event.target.value);
                                     }
                                   }}
-                                  className="w-14 rounded border border-cyan-900/60 bg-[#071322] px-1.5 py-1 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
+                                  className="w-14 rounded border border-slate-300 bg-white px-1.5 py-1 text-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-500 dark:border-cyan-900/60 dark:bg-[#071322] dark:text-white dark:focus-visible:outline-cyan-400"
                                 />
                               </label>
                             ) : (
-                              <p className="mt-2 text-[10px] text-slate-400">Assigned buoys: {ses.buoy_count || 'Not set'}</p>
+                              <p className="mt-2 text-[10px] text-slate-500 dark:text-slate-400">Assigned buoys: {ses.buoy_count || 'Not set'}</p>
                             )}
                             <div className="mt-2 space-y-1">
                               {bookings
                                 .filter((booking) => booking.session_id === ses.id && booking.status !== 'cancelled')
                                 .map((booking) => (
-                                  <label key={booking.id} className="flex items-center justify-between gap-2 text-[10px] text-slate-400">
+                                  <label key={booking.id} className="flex items-center justify-between gap-2 text-[10px] text-slate-500 dark:text-slate-400">
                                     <span>{booking.first_name} {booking.last_name}</span>
                                     {canManageBookingOperations ? (
                                       <select
@@ -364,7 +365,7 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
                                         onChange={(event) => {
                                           if (event.target.value) void assignBookingBuoy(booking.id, event.target.value);
                                         }}
-                                        className="w-16 rounded border border-cyan-900/60 bg-[#071322] px-1.5 py-1 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
+                                        className="w-24 rounded border border-slate-300 bg-white px-1.5 py-1 text-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-500 dark:border-cyan-900/60 dark:bg-[#071322] dark:text-white dark:focus-visible:outline-cyan-400"
                                       >
                                         <option value="">Unassigned</option>
                                         {Array.from({ length: Math.max(0, ses.buoy_count || 0) }, (_, index) => (
@@ -379,7 +380,7 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
                             </div>
                           </td>
                           <td className="py-3 px-4">
-                            <span className="px-2 py-0.5 rounded-full text-[11px] font-medium capitalize bg-cyan-950 text-cyan-300 border border-cyan-800">
+                            <span className="px-2 py-0.5 rounded-full text-[11px] font-medium capitalize bg-cyan-50 text-cyan-700 border border-cyan-200 dark:bg-cyan-950 dark:text-cyan-300 dark:border-cyan-800">
                               {ses.status}
                             </span>
                           </td>
@@ -387,10 +388,10 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
                             <button
                               disabled={isFull}
                               onClick={() => openEnrollModal(ses)}
-                              className={`px-3 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
+                              className={`px-3 py-1 rounded text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
                                 isFull
-                                  ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
-                                  : 'bg-cyan-500 hover:bg-cyan-400 text-[#071322] shadow-sm'
+                                  ? 'bg-slate-200 text-slate-400 cursor-not-allowed dark:bg-slate-800 dark:text-slate-500'
+                                  : 'bg-cyan-600 hover:bg-cyan-500 text-white shadow-sm dark:bg-cyan-500 dark:hover:bg-cyan-400 dark:text-[#071322]'
                               }`}
                             >
                               {isFull ? 'Full' : '+ Enroll Diver'}
@@ -413,41 +414,41 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
           {courses.map((crs) => (
             <div
               key={crs.id}
-              className="p-5 rounded-2xl bg-[#0a182a] border border-cyan-900/50 hover:border-cyan-500/50 transition-all flex flex-col justify-between space-y-4 shadow-sm"
+              className="p-5 rounded-2xl bg-white border border-slate-200 hover:border-cyan-400 transition-all flex flex-col justify-between space-y-4 shadow-sm dark:bg-[#0a182a] dark:border-cyan-900/50 dark:hover:border-cyan-500/50"
             >
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-cyan-950 text-cyan-300 border border-cyan-800">
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-cyan-50 text-cyan-700 border border-cyan-200 dark:bg-cyan-950 dark:text-cyan-300 dark:border-cyan-800">
                     {crs.agency} • {crs.level}
                   </span>
-                  <span className="text-xs font-mono text-slate-400">{crs.code}</span>
+                  <span className="text-xs font-mono text-slate-500 dark:text-slate-400">{crs.code}</span>
                 </div>
 
-                <h3 className="text-base font-bold text-white">{crs.title}</h3>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">{crs.title}</h3>
 
-                <p className="text-xs text-slate-300 leading-relaxed">
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
                   {crs.description || 'Professional freediving curriculum in Dahab.'}
                 </p>
 
                 {crs.prerequisites && (
-                  <div className="text-[11px] text-slate-400 bg-[#071322] p-2.5 rounded-lg border border-cyan-950">
-                    <strong className="text-cyan-400">Prerequisites:</strong> {crs.prerequisites}
+                  <div className="text-[11px] text-slate-600 bg-slate-50 p-2.5 rounded-lg border border-slate-200 dark:text-slate-400 dark:bg-[#071322] dark:border-cyan-950">
+                    <strong className="text-cyan-700 dark:text-cyan-400">Prerequisites:</strong> {crs.prerequisites}
                   </div>
                 )}
               </div>
 
-              <div className="pt-3 border-t border-cyan-900/40 flex items-center justify-between">
+              <div className="pt-3 border-t border-slate-200 dark:border-cyan-900/40 flex items-center justify-between">
                 <div>
-                  <div className="text-lg font-bold text-cyan-300 font-mono">
+                  <div className="text-lg font-bold text-cyan-700 dark:text-cyan-300 font-mono">
                     €{crs.price_eur}
                   </div>
-                  <div className="text-[11px] text-slate-400">
-                    {crs.price_egp?.toLocaleString()} EGP • {crs.duration_days} days
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                    {crs.price_egp ? `${crs.price_egp.toLocaleString()} EGP • ` : ''}{crs.duration_days} {crs.duration_days === 1 ? 'day' : 'days'}
                   </div>
                 </div>
 
-                <div className="text-xs text-slate-400">
-                  Max: <strong className="text-white">{crs.max_capacity}</strong> students
+                <div className="text-xs text-slate-500 dark:text-slate-400">
+                  Max: <strong className="text-slate-900 dark:text-white">{crs.max_capacity}</strong> students
                 </div>
               </div>
             </div>

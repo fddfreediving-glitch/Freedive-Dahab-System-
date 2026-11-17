@@ -36,7 +36,6 @@ interface CartLine extends CustomerRequestItemInput {
   editablePrice: boolean;
   tier?: Product['tier'];
   stayDiscount?: boolean;
-  deposit_allocation: number;
   beneficiary_student_id: string;
 }
 
@@ -168,9 +167,7 @@ export const PosView: React.FC<PosViewProps> = ({
   }
 
   const total = cart.reduce((sum, item) => sum + getUnitPrice(item) * item.quantity, 0);
-  const minimumDeposit = Math.ceil(total * 0.3 * 100) / 100;
   const depositAmount = Number(deposit);
-  const allocatedDeposit = cart.reduce((sum, item) => sum + Math.round(item.deposit_allocation * 100), 0) / 100;
   const hasGearRental = cart.some((item) => Boolean(item.equipment_id));
   const hasUnpricedItems = cart.some((item) => !Number.isFinite(item.unit_price) || item.unit_price <= 0);
 
@@ -188,7 +185,6 @@ export const PosView: React.FC<PosViewProps> = ({
         quantity: 1,
         unit_price: fixedPrice,
         editablePrice: !product.price || !priceMatchesCurrency,
-        deposit_allocation: 0,
         beneficiary_student_id: studentId,
         equipment_id: product.equipmentId,
         tier: product.tier,
@@ -219,10 +215,6 @@ export const PosView: React.FC<PosViewProps> = ({
       setFormError('Choose a customer before saving this sale.');
       return;
     }
-    if (Math.round(allocatedDeposit * 100) !== Math.round(depositAmount * 100)) {
-      setFormError('Allocate the full deposit across the listed services before saving.');
-      return;
-    }
     if (!cart.length || hasUnpricedItems) {
       setFormError('Add at least one item and confirm every price before saving.');
       return;
@@ -231,8 +223,8 @@ export const PosView: React.FC<PosViewProps> = ({
       setFormError('The requested rental quantity exceeds current availability. Remove the item or reduce its quantity.');
       return;
     }
-    if (!Number.isFinite(depositAmount) || depositAmount < minimumDeposit || depositAmount > total) {
-      setFormError(`Record a deposit between ${formatMoney(minimumDeposit, currency)} and ${formatMoney(total, currency)}.`);
+    if (!Number.isFinite(depositAmount) || depositAmount <= 0 || depositAmount > total) {
+      setFormError(`Record a deposit between 0.01 and ${formatMoney(total, currency)}.`);
       return;
     }
     if (hasGearRental && !rentalReturnDate) {
@@ -247,6 +239,19 @@ export const PosView: React.FC<PosViewProps> = ({
 
     setSubmitting(true);
     try {
+      let remainingCents = Math.round(depositAmount * 100);
+      const allocations = cart
+        .map((item, index) => {
+          const lineCents = Math.round(getUnitPrice(item) * item.quantity * 100);
+          const amountCents = index === cart.length - 1 ? remainingCents : Math.min(lineCents, remainingCents);
+          remainingCents -= amountCents;
+          return {
+            item_index: index,
+            beneficiary_student_id: item.beneficiary_student_id,
+            amount: amountCents / 100,
+          };
+        })
+        .filter((allocation) => allocation.amount > 0);
       await onCreateCustomerRequest({
         student_id: studentId,
         currency,
@@ -269,11 +274,7 @@ export const PosView: React.FC<PosViewProps> = ({
           payment_date: paymentDate,
           reference_number: paymentReference,
           notes: paymentNotes,
-          allocations: cart.map((item, index) => ({
-            item_index: index,
-            beneficiary_student_id: item.beneficiary_student_id,
-            amount: item.deposit_allocation,
-          })).filter((allocation) => allocation.amount > 0),
+          allocations,
         },
       });
       await onRefresh();
@@ -562,38 +563,21 @@ export const PosView: React.FC<PosViewProps> = ({
                       <p className="font-data text-right text-sm font-semibold text-slate-700 dark:text-slate-200">
                         Line total: {formatMoney(lineTotal, currency)}
                       </p>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label htmlFor={`pos-beneficiary-${item.id}`} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">
-                            Beneficiary *
-                          </label>
-                          <select
-                            id={`pos-beneficiary-${item.id}`}
-                            required
-                            value={item.beneficiary_student_id}
-                            onChange={(event) => updateLine(item.id, { beneficiary_student_id: event.target.value })}
-                            className="min-h-10 w-full rounded-lg border border-[#E2E8F0] bg-white px-2 text-sm text-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#4C8BF5] dark:border-slate-700 dark:bg-slate-900 dark:text-white"
-                          >
-                            {students.map((student) => (
-                              <option key={student.id} value={student.id}>{student.first_name} {student.last_name}</option>
-                            ))}
-                          </select>
-                        </div>
-                        <div>
-                          <label htmlFor={`pos-allocation-${item.id}`} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">
-                            Deposit allocated ({currency}) *
-                          </label>
-                          <input
-                            id={`pos-allocation-${item.id}`}
-                            type="number"
-                            min="0"
-                            max={lineTotal}
-                            step="0.01"
-                            value={item.deposit_allocation || ''}
-                            onChange={(event) => updateLine(item.id, { deposit_allocation: Number(event.target.value) || 0 })}
-                            className="min-h-10 w-full rounded-lg border border-[#E2E8F0] bg-white px-2 text-sm text-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#4C8BF5] dark:border-slate-700 dark:bg-slate-900 dark:text-white"
-                          />
-                        </div>
+                      <div>
+                        <label htmlFor={`pos-beneficiary-${item.id}`} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">
+                          Beneficiary *
+                        </label>
+                        <select
+                          id={`pos-beneficiary-${item.id}`}
+                          required
+                          value={item.beneficiary_student_id}
+                          onChange={(event) => updateLine(item.id, { beneficiary_student_id: event.target.value })}
+                          className="min-h-10 w-full rounded-lg border border-[#E2E8F0] bg-white px-2 text-sm text-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#4C8BF5] dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                        >
+                          {students.map((student) => (
+                            <option key={student.id} value={student.id}>{student.first_name} {student.last_name}</option>
+                          ))}
+                        </select>
                       </div>
                     </li>
                   );
@@ -646,15 +630,12 @@ export const PosView: React.FC<PosViewProps> = ({
           <section aria-labelledby="pos-payment-title" className="space-y-3 border-t border-[#E8EEF7] pt-4 dark:border-slate-800">
             <div className="flex items-center justify-between gap-3">
               <h3 id="pos-payment-title" className="font-bold text-[#28334E] dark:text-white">Deposit received</h3>
-              <span className="text-xs text-slate-600 dark:text-slate-400">Minimum 30%</span>
+              <span className="text-xs text-slate-600 dark:text-slate-400">Applies to the whole bill</span>
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <div>
-                <label htmlFor="pos-deposit" className="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">Amount — min. {formatMoney(minimumDeposit, currency)} *</label>
-                <input id="pos-deposit" type="number" min={minimumDeposit || 0.01} max={total} step="0.01" required value={deposit}                 onChange={(event) => {
-                  setDeposit(event.target.value);
-                  if (cart.length === 1) updateLine(cart[0].id, { deposit_allocation: Number(event.target.value) || 0 });
-                }} className="min-h-11 w-full rounded-lg border border-[#E2E8F0] bg-white px-3 text-sm text-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#4C8BF5] dark:border-slate-700 dark:bg-slate-900 dark:text-white" />
+                <label htmlFor="pos-deposit" className="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">Amount ({currency}) *</label>
+                <input id="pos-deposit" type="number" min="0.01" max={total} step="0.01" required value={deposit} onChange={(event) => setDeposit(event.target.value)} className="min-h-11 w-full rounded-lg border border-[#E2E8F0] bg-white px-3 text-sm text-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#4C8BF5] dark:border-slate-700 dark:bg-slate-900 dark:text-white" />
               </div>
               <div>
                 <label htmlFor="pos-method" className="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">Payment method *</label>

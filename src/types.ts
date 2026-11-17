@@ -21,12 +21,27 @@ export interface User {
   is_active?: number;
 }
 
+export interface StudentActivity {
+  title: string;
+  status: string;
+  start_date?: string | null;
+  end_date?: string | null;
+}
+
 export interface Student {
   id: string;
   first_name: string;
   last_name: string;
   email: string;
   phone?: string;
+  whatsapp?: string;
+  arrival_date?: string;
+  departure_date?: string;
+  needs_accommodation?: number;
+  needs_airport_transfer?: number;
+  activities?: StudentActivity[];
+  paid_total_eur?: number;
+  deposit_paid_eur?: number;
   nationality?: string;
   date_of_birth?: string;
   certification_agency?: string;
@@ -112,7 +127,7 @@ export interface Course {
   id: string;
   code: string;
   title: string;
-  agency: 'AIDA' | 'Molchanovs' | 'Freedive Dahab Specialty';
+  agency: 'SSI' | 'Freedive Dahab Specialty';
   level: string;
   duration_days: number;
   max_capacity: number;

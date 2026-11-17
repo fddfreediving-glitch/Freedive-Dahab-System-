@@ -3,8 +3,11 @@ import path from 'path';
 import fs from 'fs';
 import { initialPosCatalog } from '../src/data/posCatalog.js';
 
-// Ensure data directory exists
-const dataDir = path.resolve(process.cwd(), 'data');
+// Hosting providers mount a persistent volume and point DATA_DIR at it so the
+// SQLite file survives restarts and redeploys.
+const dataDir = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.resolve(process.cwd(), 'data');
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
@@ -44,7 +47,7 @@ export function initializeDatabase() {
       phone TEXT,
       emergency_contact TEXT,
       languages TEXT DEFAULT '["English"]',
-      certifications TEXT DEFAULT '[]', -- e.g. ["AIDA Instructor", "Molchanovs W2I"]
+      certifications TEXT DEFAULT '[]', -- e.g. ["SSI Instructor", "SSI Level 3"]
       hourly_rate REAL DEFAULT 0,
       session_commission REAL DEFAULT 0,
       monthly_salary REAL DEFAULT 0,
@@ -82,9 +85,14 @@ export function initializeDatabase() {
       last_name TEXT NOT NULL,
       email TEXT UNIQUE NOT NULL,
       phone TEXT,
+      whatsapp TEXT,
+      arrival_date TEXT,
+      departure_date TEXT, -- Check-out date of the customer's stay
+      needs_accommodation INTEGER NOT NULL DEFAULT 0,
+      needs_airport_transfer INTEGER NOT NULL DEFAULT 0,
       nationality TEXT,
       date_of_birth TEXT,
-      certification_agency TEXT, -- 'AIDA', 'Molchanovs', 'SSI', 'PADI', 'None'
+      certification_agency TEXT, -- 'SSI', 'Freedive Dahab Specialty', or a prior agency the diver trained with
       certification_level TEXT,
       total_depth_pb REAL DEFAULT 0, -- Personal best depth in meters
       static_apnea_pb TEXT, -- e.g. "04:15"
@@ -126,7 +134,7 @@ export function initializeDatabase() {
       id TEXT PRIMARY KEY,
       code TEXT UNIQUE NOT NULL,
       title TEXT NOT NULL,
-      agency TEXT NOT NULL, -- 'AIDA', 'Molchanovs', 'Freedive Dahab Specialty'
+      agency TEXT NOT NULL, -- 'SSI', 'Freedive Dahab Specialty'
       level TEXT NOT NULL, -- 'Beginner', 'Intermediate', 'Advanced', 'Master', 'Specialty'
       duration_days INTEGER NOT NULL DEFAULT 2,
       max_capacity INTEGER NOT NULL DEFAULT 4,
@@ -467,6 +475,13 @@ export function initializeDatabase() {
       value TEXT NOT NULL
     );
 
+    -- Center business profile & notification preferences (key-value)
+    CREATE TABLE IF NOT EXISTS center_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT,
+      updated_at TEXT
+    );
+
     -- Indices for quick lookup and high performance
     CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
     CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
@@ -573,6 +588,21 @@ export function initializeDatabase() {
   const studentColumns = db.pragma('table_info(students)') as Array<{ name: string }>;
   if (!studentColumns.some((column) => column.name === 'medical_clearance_status')) {
     db.exec("ALTER TABLE students ADD COLUMN medical_clearance_status TEXT NOT NULL DEFAULT 'unknown'");
+  }
+  if (!studentColumns.some((column) => column.name === 'whatsapp')) {
+    db.exec('ALTER TABLE students ADD COLUMN whatsapp TEXT');
+  }
+  if (!studentColumns.some((column) => column.name === 'arrival_date')) {
+    db.exec('ALTER TABLE students ADD COLUMN arrival_date TEXT');
+  }
+  if (!studentColumns.some((column) => column.name === 'departure_date')) {
+    db.exec('ALTER TABLE students ADD COLUMN departure_date TEXT');
+  }
+  if (!studentColumns.some((column) => column.name === 'needs_accommodation')) {
+    db.exec('ALTER TABLE students ADD COLUMN needs_accommodation INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!studentColumns.some((column) => column.name === 'needs_airport_transfer')) {
+    db.exec('ALTER TABLE students ADD COLUMN needs_airport_transfer INTEGER NOT NULL DEFAULT 0');
   }
 
   const courseSessionColumns = db.pragma('table_info(course_sessions)') as Array<{ name: string }>;

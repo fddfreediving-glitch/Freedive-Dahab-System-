@@ -14,6 +14,7 @@ import {
 } from '../types';
 import { Language, translations } from '../i18n';
 import { apiRequest } from '../api';
+import { downloadCsv } from '../utils/csv';
 import {
   Receipt,
   DollarSign,
@@ -27,9 +28,9 @@ import {
   Lock,
   X,
   FileText,
+  Download,
 } from 'lucide-react';
 import { InvoiceBillDialog } from './InvoiceBillDialog';
-import { BrandMark } from './BrandMark';
 
 type RequestCategory = Exclude<CustomerRequestInput['items'][number]['category'], 'gear_rental'>;
 
@@ -45,7 +46,6 @@ interface RequestDraftItem {
   quantity: number;
   unit_price: number;
   beneficiary_student_id: string;
-  deposit_allocation: number;
   check_in_date?: string;
   check_out_date?: string;
 }
@@ -282,9 +282,9 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
     tax_rate: 0,
     items: [{
       category: 'course' as NonNullable<Invoice['items']>[number]['category'],
-      description: 'AIDA 2 Freediver Course Tuition',
+      description: 'SSI Freediver Course Tuition',
       quantity: 1,
-      unit_price: 320,
+      unit_price: 310,
       check_in_date: '',
       check_out_date: '',
     }],
@@ -319,7 +319,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
     },
   });
   const [requestItems, setRequestItems] = useState<RequestDraftItem[]>([
-    { category: 'course', description: 'SSI Freediver', quantity: 1, unit_price: 310, beneficiary_student_id: '', deposit_allocation: 0 },
+    { category: 'course', description: 'SSI Freediver', quantity: 1, unit_price: 310, beneficiary_student_id: '' },
   ]);
 
   // New expense state
@@ -522,6 +522,85 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
     totals[expense.currency] = (totals[expense.currency] || 0) + expense.amount;
     return totals;
   }, {});
+
+  const incomeByCategory = (() => {
+    const totals = new Map<string, number>();
+    invoices
+      .filter((invoice) => invoice.status !== 'cancelled' && invoice.currency === 'EUR')
+      .forEach((invoice) =>
+        (invoice.items || []).forEach((item) => {
+          const key = item.category || 'other';
+          totals.set(key, (totals.get(key) || 0) + item.total_price);
+        }),
+      );
+    return [...totals.entries()].sort((a, b) => b[1] - a[1]);
+  })();
+  const expensesByCategory = (() => {
+    const totals = new Map<string, number>();
+    expenses
+      .filter((expense) => expense.status !== 'rejected')
+      .forEach((expense) => {
+        const rate = (fxRates.rates_to_eur as Record<string, number | null>)[expense.currency] ?? 0;
+        totals.set(expense.category, (totals.get(expense.category) || 0) + expense.amount * rate);
+      });
+    return [...totals.entries()].sort((a, b) => b[1] - a[1]);
+  })();
+  const formatCategoryLabel = (category: string) =>
+    category.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+  const exportInvoicesCsv = () => {
+    downloadCsv('invoices.csv', [
+      ['Invoice', 'Order', 'Customer', 'Email', 'Issued', 'Due', 'Currency', 'Total', 'Paid', 'Balance', 'Status'],
+      ...filteredInvoices.map((invoice) => {
+        const balance = Math.max(0, invoice.total_amount - invoice.paid_amount);
+        return [
+          invoice.invoice_number,
+          invoice.customer_request_number || '',
+          `${invoice.first_name} ${invoice.last_name}`,
+          invoice.student_email || '',
+          invoice.issue_date,
+          invoice.due_date,
+          invoice.currency,
+          invoice.total_amount,
+          invoice.paid_amount,
+          balance,
+          invoice.status,
+        ];
+      }),
+    ]);
+  };
+  const exportDailyIncomeCsv = () => {
+    downloadCsv(`income-${selectedDate}.csv`, [
+      ['Date', 'Customer', 'Invoice', 'Method', 'Currency', 'Amount', 'EUR amount', 'Reference'],
+      ...dailyIncome.map((payment) => [
+        payment.payment_date,
+        `${payment.invoice.first_name} ${payment.invoice.last_name}`,
+        payment.invoice.invoice_number,
+        payment.payment_method,
+        payment.currency,
+        payment.amount,
+        payment.eur_amount_cents != null ? payment.eur_amount_cents / 100 : '',
+        payment.reference_number || '',
+      ]),
+    ]);
+  };
+  const exportRequestsCsv = () => {
+    downloadCsv('customer-requests.csv', [
+      ['Request', 'Invoice', 'Customer', 'Email', 'Issued', 'Currency', 'Total', 'Paid', 'Balance', 'Status'],
+      ...customerRequests.map((request) => [
+        request.request_number,
+        request.invoice_number,
+        `${request.first_name} ${request.last_name}`,
+        request.student_email || '',
+        request.issue_date,
+        request.currency,
+        request.total_amount,
+        request.paid_amount,
+        Math.max(0, request.total_amount - request.paid_amount),
+        request.status,
+      ]),
+    ]);
+  };
 
   const filteredInvoices = invoices.filter((inv) => {
     const matchesSearch =
@@ -863,8 +942,6 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
   };
 
   const requestTotal = requestItems.reduce((total, item) => total + item.quantity * item.unit_price, 0);
-  const minimumRequestDeposit = Math.ceil(requestTotal * 0.3 * 100) / 100;
-  const allocatedRequestDeposit = requestItems.reduce((total, item) => total + Math.round(item.deposit_allocation * 100), 0) / 100;
 
   const handleCustomerRequestSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -877,27 +954,31 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
       setFormError('Enter valid accommodation check-in and check-out dates, with check-out after check-in.');
       return;
     }
-    if (newCustomerRequest.initial_payment.amount < minimumRequestDeposit || newCustomerRequest.initial_payment.amount > requestTotal) {
-      setFormError(`The deposit must be at least 30% (${newCustomerRequest.currency} ${minimumRequestDeposit}) and no more than the total bill.`);
-      return;
-    }
-    if (Math.round(allocatedRequestDeposit * 100) !== Math.round(newCustomerRequest.initial_payment.amount * 100)) {
-      setFormError('Allocate the full deposit across the listed services before saving.');
+    if (newCustomerRequest.initial_payment.amount <= 0 || newCustomerRequest.initial_payment.amount > requestTotal) {
+      setFormError(`The deposit must be more than zero and no more than the total bill (${newCustomerRequest.currency} ${requestTotal}).`);
       return;
     }
 
     setSubmitting(true);
     try {
+      let remainingCents = Math.round(newCustomerRequest.initial_payment.amount * 100);
       await onCreateCustomerRequest({
         ...newCustomerRequest,
-        items: requestItems.map(({ deposit_allocation: _deposit, ...item }) => item),
+        items: requestItems.map((item) => ({ ...item })),
         initial_payment: {
           ...newCustomerRequest.initial_payment,
-          allocations: requestItems.map((item, item_index) => ({
-            item_index,
-            beneficiary_student_id: item.beneficiary_student_id || newCustomerRequest.student_id,
-            amount: item.deposit_allocation,
-          })).filter((allocation) => allocation.amount > 0),
+          allocations: requestItems
+            .map((item, item_index) => {
+              const lineCents = Math.round(item.quantity * item.unit_price * 100);
+              const amountCents = item_index === requestItems.length - 1 ? remainingCents : Math.min(lineCents, remainingCents);
+              remainingCents -= amountCents;
+              return {
+                item_index,
+                beneficiary_student_id: item.beneficiary_student_id || newCustomerRequest.student_id,
+                amount: amountCents / 100,
+              };
+            })
+            .filter((allocation) => allocation.amount > 0),
         },
       });
       setIsRequestModalOpen(false);
@@ -907,7 +988,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
         special_request: '',
         initial_payment: { ...current.initial_payment, amount: 0, reference_number: '', notes: '' },
       }));
-      setRequestItems([{ category: 'course', description: 'SSI Freediver', quantity: 1, unit_price: 310, beneficiary_student_id: '', deposit_allocation: 0 }]);
+      setRequestItems([{ category: 'course', description: 'SSI Freediver', quantity: 1, unit_price: 310, beneficiary_student_id: '' }]);
       await onRefresh();
       await refreshFinanceSettings();
     } catch (err: any) {
@@ -989,7 +1070,6 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
       category,
       description: catalogItem.description,
       unit_price: newCustomerRequest.currency === 'EUR' ? catalogItem.price : 0,
-      deposit_allocation: 0,
       ...(category === 'accommodation'
         ? { check_in_date: checkInDate, check_out_date: localDateString(checkOut), quantity: 1 }
         : { check_in_date: undefined, check_out_date: undefined }),
@@ -1002,7 +1082,6 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
     updateRequestItem(index, {
       description,
       unit_price: newCustomerRequest.currency === 'EUR' ? catalogItem?.price || 0 : 0,
-      deposit_allocation: 0,
     });
   };
 
@@ -1054,9 +1133,8 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
       {/* Top Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-slate-200 dark:border-slate-800">
         <div>
-          <h2 className="text-xl font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
-            <BrandMark className="h-9 w-9 rounded-lg" />
-            <span>{frontDeskOnly ? 'Customer Requests' : 'Finance & Billing Ledger'}</span>
+          <h2 className="text-xl font-extrabold text-slate-900 dark:text-white">
+            {frontDeskOnly ? 'Customer Requests' : 'Finance & Billing Ledger'}
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
             {frontDeskOnly
@@ -1285,11 +1363,21 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
           aria-labelledby="finance-requests-tab"
           className="space-y-4"
         >
-          <div>
-            <h3 className="text-lg font-bold text-slate-900 dark:text-white">Customer Requests & Bills</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              Each request has its own invoice and payment history. New requests are saved with the deposit Gabriella records.
-            </p>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white">Customer Requests & Bills</h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Each request has its own invoice and payment history. New requests are saved with the deposit Gabriella records.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={exportRequestsCsv}
+              className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-cyan-900/50 bg-[#071322] px-3 text-xs font-semibold text-cyan-300 transition hover:bg-[#0a1c30]"
+            >
+              <Download className="h-4 w-4" aria-hidden="true" />
+              Export CSV
+            </button>
           </div>
           <div className="bg-[#0a182a] border border-cyan-900/40 rounded-xl overflow-hidden shadow-sm">
             <div className="overflow-x-auto">
@@ -1406,6 +1494,14 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                 className="min-h-10 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 text-sm text-slate-800 dark:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500"
               />
             </div>
+            <button
+              type="button"
+              onClick={exportDailyIncomeCsv}
+              className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"
+            >
+              <Download className="w-3.5 h-3.5" aria-hidden="true" />
+              Export day CSV
+            </button>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -1494,6 +1590,14 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
               <option value="issued">Issued / Unpaid</option>
               <option value="overdue">Overdue</option>
             </select>
+            <button
+              type="button"
+              onClick={exportInvoicesCsv}
+              className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-cyan-800 px-3 py-1.5 text-xs font-semibold text-cyan-200 hover:bg-cyan-950 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300"
+            >
+              <Download className="w-3.5 h-3.5" aria-hidden="true" />
+              Export CSV
+            </button>
           </div>
 
           <div className="bg-[#0a182a] border border-cyan-900/40 rounded-xl overflow-hidden shadow-sm">
@@ -1682,6 +1786,41 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
             <p className="text-xs text-slate-500 dark:text-slate-400">
               Charges increase the balance; payments and credits reduce it. Refunds, expenses, and balance-only transfers remain visible as separate audit entries.
             </p>
+          </div>
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            {[
+              { title: 'Income by category (EUR)', data: incomeByCategory, barClass: 'bg-emerald-500/80', valueClass: 'text-emerald-300' },
+              { title: 'Expenses by category (EUR)', data: expensesByCategory, barClass: 'bg-rose-500/80', valueClass: 'text-rose-300' },
+            ].map((chart) => {
+              const max = chart.data.length ? chart.data[0][1] : 0;
+              return (
+                <div key={chart.title} className="rounded-xl border border-cyan-900/40 bg-[#0a182a] p-4 shadow-sm">
+                  <h4 className="mb-3 text-xs font-semibold uppercase tracking-wider text-cyan-400/90">{chart.title}</h4>
+                  {chart.data.length === 0 ? (
+                    <p className="text-xs text-slate-500">No records yet.</p>
+                  ) : (
+                    <ul className="space-y-2.5">
+                      {chart.data.map(([category, amount]) => (
+                        <li key={category}>
+                          <div className="mb-1 flex items-baseline justify-between gap-2">
+                            <span className="truncate text-xs text-slate-300">{formatCategoryLabel(category)}</span>
+                            <span className={`font-data shrink-0 text-xs tabular-nums ${chart.valueClass}`}>
+                              {new Intl.NumberFormat('en-IE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 2 }).format(amount)}
+                            </span>
+                          </div>
+                          <div className="h-2 overflow-hidden rounded-full bg-[#071322]">
+                            <div
+                              className={`h-full rounded-full ${chart.barClass}`}
+                              style={{ width: `${max > 0 ? Math.max(2, (amount / max) * 100) : 0}%` }}
+                            />
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              );
+            })}
           </div>
           <div className="grid grid-cols-1 gap-3 rounded-xl border border-cyan-900/40 bg-[#0a182a] p-3 sm:grid-cols-2 lg:grid-cols-4">
             <div>
@@ -1970,7 +2109,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                     type="button"
                     onClick={() => setRequestItems((current) => [
                       ...current,
-                      { category: 'course', description: requestCatalog.course[0].description, quantity: 1, unit_price: newCustomerRequest.currency === 'EUR' ? requestCatalog.course[0].price : 0, beneficiary_student_id: '', deposit_allocation: 0 },
+                      { category: 'course', description: requestCatalog.course[0].description, quantity: 1, unit_price: newCustomerRequest.currency === 'EUR' ? requestCatalog.course[0].price : 0, beneficiary_student_id: '' },
                     ])}
                     className="min-h-8 rounded-lg border border-cyan-800 px-3 py-1 text-cyan-200 hover:bg-cyan-950 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
                   >
@@ -2088,19 +2227,6 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                           className="w-full min-h-10 bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
                         />
                       </div>
-                      <div className="sm:col-span-12">
-                        <label htmlFor={`request-allocation-${index}`} className="block text-slate-300 mb-1">Deposit allocated to this service ({newCustomerRequest.currency})</label>
-                        <input
-                          id={`request-allocation-${index}`}
-                          type="number"
-                          min="0"
-                          max={item.quantity * item.unit_price}
-                          step="0.01"
-                          value={item.deposit_allocation || ''}
-                          onChange={(event) => updateRequestItem(index, { deposit_allocation: Number(event.target.value) })}
-                          className="w-full min-h-10 bg-[#071322] border border-cyan-900/60 rounded-lg p-2 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
-                        />
-                      </div>
                       {requestItems.length > 1 && (
                         <div className="sm:col-span-12 flex justify-end">
                           <button
@@ -2118,11 +2244,8 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                 <p className="text-[11px] text-slate-400">
                   Website course and package prices are suggested in EUR. Accommodation is season/occupancy dependent, and shop prices are not published; enter the agreed price. Add dates, room needs, sizes, or other details in special notes.
                 </p>
-                <div className="text-right font-mono text-sm font-bold text-white">
+                <div className="text-right font-data text-sm font-bold text-white">
                   Request total: {newCustomerRequest.currency} {requestTotal.toLocaleString()}
-                </div>
-                <div className={`text-right text-xs font-semibold ${Math.round(allocatedRequestDeposit * 100) === Math.round(newCustomerRequest.initial_payment.amount * 100) ? 'text-emerald-300' : 'text-amber-300'}`}>
-                  Deposit allocation: {newCustomerRequest.currency} {allocatedRequestDeposit.toFixed(2)} / {newCustomerRequest.initial_payment.amount.toFixed(2)}
                 </div>
               </div>
 
@@ -2144,7 +2267,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label htmlFor="request-deposit" className="block text-slate-300 mb-1">
-                      Amount ({newCustomerRequest.currency}) * — minimum 30% ({minimumRequestDeposit})
+                      Amount ({newCustomerRequest.currency}) * — applies to the whole bill
                     </label>
                     <input
                       id="request-deposit"

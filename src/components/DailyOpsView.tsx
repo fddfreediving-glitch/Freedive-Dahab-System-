@@ -3,7 +3,6 @@ import { DailyActivity, Student, User, UserRole } from '../types';
 import { Language, translations } from '../i18n';
 import {
   Anchor,
-  Clock,
   Compass,
   Plus,
   Users,
@@ -127,7 +126,7 @@ export const DailyOpsView: React.FC<DailyOpsViewProps> = ({
           className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#4C8BF5] hover:bg-[#3B7BE8] text-white font-semibold text-xs shadow-md shadow-blue-500/20 transition-all cursor-pointer self-start sm:self-auto"
         >
           <Plus className="w-4 h-4" />
-          <span>Schedule Ocean Session</span>
+          <span>Schedule Session</span>
         </button>
       </div>
 
@@ -169,16 +168,29 @@ export const DailyOpsView: React.FC<DailyOpsViewProps> = ({
         {activities.map((act) => {
           const isCompleted = act.status === 'completed';
           const isInWater = act.status === 'in_water';
+          const [year, month, day] = act.activity_date.split('-').map(Number);
+          const sessionDate = new Date(Date.UTC(year, month - 1, day));
+          const weekday = sessionDate.toLocaleDateString('en-GB', { weekday: 'short', timeZone: 'UTC' });
+          const monthName = sessionDate.toLocaleDateString('en-GB', { month: 'short', timeZone: 'UTC' });
 
           return (
             <div
               key={act.id}
-              className={`p-5 rounded-2xl border transition-all shadow-[0_2px_12px_rgba(40,51,78,0.02)] space-y-4 ${
+              className={`flex flex-col sm:flex-row rounded-2xl border transition-all shadow-[0_2px_12px_rgba(40,51,78,0.02)] overflow-hidden ${
                 isInWater
                   ? 'bg-blue-50/40 dark:bg-blue-950/20 border-[#4C8BF5] ring-1 ring-[#4C8BF5]/20'
                   : 'bg-white dark:bg-[#1E293B] border-[#E8EEF7] dark:border-slate-800 hover:border-[#4C8BF5]/40'
               }`}
             >
+              {/* Calendar date tile */}
+              <div className="shrink-0 bg-[#28334E] dark:bg-slate-800 text-white flex sm:flex-col items-center justify-center gap-x-4 gap-y-1 px-4 py-3 sm:py-4 sm:w-28 text-center">
+                <span className="font-data text-3xl font-bold leading-none">{String(day).padStart(2, '0')}</span>
+                <span className="text-[11px] font-bold uppercase tracking-widest text-slate-300">{monthName}</span>
+                <span className="text-[11px] text-slate-400">{weekday}</span>
+                <span className="font-data text-[11px] text-[#8FB4F8]">{act.start_time}–{act.end_time}</span>
+              </div>
+
+              <div className="flex-1 p-5 space-y-4">
               {/* Header */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="space-y-1">
@@ -193,11 +205,7 @@ export const DailyOpsView: React.FC<DailyOpsViewProps> = ({
                       </span>
                     )}
                   </div>
-                  <div className="flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400">
-                    <span className="flex items-center gap-1.5 text-[#4C8BF5] font-mono">
-                      <Clock className="w-3.5 h-3.5" />
-                      <span>{act.activity_date} • {act.start_time} - {act.end_time}</span>
-                    </span>
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
                     <span>Lead: <strong className="text-slate-800 dark:text-white">{act.lead_instructor_name || 'Staff'}</strong></span>
                     {act.safety_diver_name && (
                       <span>Safety: <strong className="text-[#4C8BF5]">{act.safety_diver_name}</strong></span>
@@ -288,6 +296,7 @@ export const DailyOpsView: React.FC<DailyOpsViewProps> = ({
                 >
                   + Add Diver to Session
                 </button>
+              </div>
               </div>
             </div>
           );

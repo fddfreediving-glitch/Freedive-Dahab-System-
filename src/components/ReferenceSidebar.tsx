@@ -3,6 +3,7 @@ import { User, UserRole } from '../types';
 import { Language, translations } from '../i18n';
 import { NavTab } from './Navigation';
 import { BrandMark } from './BrandMark';
+import { HelpPanel } from './HelpPanel';
 import {
   Users,
   BarChart3,
@@ -23,8 +24,6 @@ import {
   ChevronDown,
   X,
   FileText,
-  LifeBuoy,
-  Phone,
 } from 'lucide-react';
 
 interface ReferenceSidebarProps {
@@ -75,7 +74,7 @@ export const ReferenceSidebar: React.FC<ReferenceSidebarProps> = ({
       locked: !canAccessCustomerRequests,
       lockReason: 'Owner, Finance & Front Desk only',
     },
-    { id: 'calendar' as NavTab, label: 'Planner', icon: CalendarIcon },
+    { id: 'calendar' as NavTab, label: 'Daily Planner', icon: CalendarIcon },
     { id: 'students_crm' as NavTab, label: 'Customers', icon: Users },
     {
       id: 'pos' as NavTab,
@@ -160,20 +159,12 @@ export const ReferenceSidebar: React.FC<ReferenceSidebarProps> = ({
       >
         {/* Top Header / Logo Area */}
         <div className="p-5 pb-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <BrandMark />
-
-              {!isCollapsed && (
-                <div className="leading-tight truncate">
-                  <div className="font-extrabold text-white text-base tracking-tight">
-                    Freedive<span className="text-[#60A5FA]">Dahab</span>
-                  </div>
-                  <div className="text-[10px] text-slate-400 font-medium tracking-wide uppercase">
-                    Operations ERP
-                  </div>
-                </div>
-              )}
+          <div className={isCollapsed ? 'flex flex-col items-center gap-3' : 'flex items-center justify-between'}>
+            <div className="flex items-center gap-3 min-w-0">
+              <BrandMark
+                tone="light"
+                className={`${isCollapsed ? 'h-6 w-auto' : 'h-12 w-auto'} shrink-0`}
+              />
             </div>
 
             {/* Collapse / Expand Toggle Button */}
@@ -252,7 +243,7 @@ export const ReferenceSidebar: React.FC<ReferenceSidebarProps> = ({
                       ? isCollapsed
                         ? 'text-white'
                         : 'text-white bg-slate-700/40 shadow-xs'
-                      : 'text-slate-400 hover:text-white hover:bg-slate-700/25'
+                      : 'text-white/85 hover:text-white hover:bg-slate-700/25'
                   }`}
                 >
                   {isCollapsed ? (
@@ -260,7 +251,7 @@ export const ReferenceSidebar: React.FC<ReferenceSidebarProps> = ({
                       className={`w-11 h-11 rounded-full flex items-center justify-center transition-all ${
                         isActive
                           ? 'bg-[#4C8BF5] text-white shadow-lg shadow-blue-500/30'
-                          : 'text-slate-400 hover:text-white hover:bg-slate-700/50'
+                          : 'text-white/85 hover:text-white hover:bg-slate-700/50'
                       }`}
                     >
                       <Icon className="w-5 h-5" />
@@ -271,7 +262,7 @@ export const ReferenceSidebar: React.FC<ReferenceSidebarProps> = ({
                         className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
                           isActive
                             ? 'bg-[#4C8BF5] text-white shadow-sm shadow-blue-500/20'
-                            : 'text-slate-400 group-hover:text-white'
+                            : 'text-white/85 group-hover:text-white'
                         }`}
                       >
                         <Icon className="w-4 h-4" />
@@ -296,7 +287,7 @@ export const ReferenceSidebar: React.FC<ReferenceSidebarProps> = ({
                 type="button"
                 onClick={() => setShowMoreErp(!showMoreErp)}
                 aria-expanded={showMoreErp}
-                className="w-full flex items-center justify-between px-3 text-[11px] font-bold text-slate-400 hover:text-slate-300 tracking-wider uppercase mb-2 cursor-pointer"
+                className="w-full flex items-center justify-between px-3 text-[11px] font-bold text-white/70 hover:text-white tracking-wider uppercase mb-2 cursor-pointer"
               >
                 <span>ERP Operations</span>
                 <ChevronDown
@@ -336,10 +327,10 @@ export const ReferenceSidebar: React.FC<ReferenceSidebarProps> = ({
                         className={`w-full flex items-center gap-3 px-3.5 py-2 rounded-xl text-xs font-medium transition-all cursor-pointer ${
                           isActive
                             ? 'text-white bg-slate-700/40'
-                            : 'text-slate-400 hover:text-white hover:bg-slate-700/20'
+                            : 'text-white/85 hover:text-white hover:bg-slate-700/20'
                         }`}
                       >
-                        <Icon className="w-4 h-4 shrink-0 text-slate-400" />
+                        <Icon className="w-4 h-4 shrink-0 text-white/85" />
                         <span className="truncate flex-1 text-left rtl:text-right">
                           {item.label}
                         </span>
@@ -360,7 +351,7 @@ export const ReferenceSidebar: React.FC<ReferenceSidebarProps> = ({
           <button
             onClick={() => setIsHelpOpen(true)}
             title="Freedive Dahab Help & Support"
-            className={`w-full flex items-center gap-3 py-2.5 rounded-xl text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-700/30 transition-all cursor-pointer ${
+            className={`w-full flex items-center gap-3 py-2.5 rounded-xl text-xs font-medium text-white/85 hover:text-white hover:bg-slate-700/30 transition-all cursor-pointer ${
               isCollapsed ? 'justify-center px-0' : 'px-3'
             }`}
           >
@@ -372,77 +363,10 @@ export const ReferenceSidebar: React.FC<ReferenceSidebarProps> = ({
 
       {/* Help Modal */}
       {isHelpOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-[#1E293B] rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-2xl border border-slate-200 dark:border-slate-700">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-700">
-              <div className="flex items-center gap-2">
-                <LifeBuoy className="w-5 h-5 text-[#4C8BF5]" />
-                <h3 className="font-bold text-slate-900 dark:text-white text-base">
-                  Freedive Dahab Operations & ERP Help
-                </h3>
-              </div>
-              <button
-                onClick={() => setIsHelpOpen(false)}
-                className="text-slate-400 hover:text-slate-600 dark:hover:text-white p-1 rounded-lg cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="space-y-3 text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-              <p>
-                Welcome to the internal operations system for <strong>Freedive Dahab</strong>.
-                This system provides real-time tracking for Red Sea student training, instructor workloads,
-                daily ocean activities, gear locker checkout, invoices, and audit logging.
-              </p>
-
-              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800 space-y-2 border border-slate-200 dark:border-slate-700">
-                <div className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                  <Phone className="w-4 h-4 text-emerald-500" />
-                  <span>Dahab Emergency Numbers</span>
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-[11px]">
-                  <div>
-                    <span className="text-slate-400">Hyperbaric Chamber:</span>
-                    <strong className="block text-slate-800 dark:text-slate-200">+20 69 364 0530</strong>
-                  </div>
-                  <div>
-                    <span className="text-slate-400">Dahab Ambulance:</span>
-                    <strong className="block text-slate-800 dark:text-slate-200">123</strong>
-                  </div>
-                  <div>
-                    <span className="text-slate-400">Tourism Police:</span>
-                    <strong className="block text-slate-800 dark:text-slate-200">126</strong>
-                  </div>
-                  <div>
-                    <span className="text-slate-400">Blue Hole Station:</span>
-                    <strong className="block text-slate-800 dark:text-slate-200">VHF Channel 16</strong>
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <span className="font-bold text-slate-900 dark:text-white">Active User Profile:</span>
-                <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Logged in as <strong>{currentUser?.full_name}</strong> ({currentUser?.email}) with role{' '}
-                  <span className="font-mono uppercase text-[#4C8BF5] font-bold">
-                    {currentUser?.role?.replace('_', ' ')}
-                  </span>
-                  .
-                </div>
-              </div>
-            </div>
-
-            <div className="pt-2 flex justify-end">
-              <button
-                onClick={() => setIsHelpOpen(false)}
-                className="px-4 py-2 rounded-xl bg-[#4C8BF5] hover:bg-[#3B7BE8] text-white font-medium text-xs shadow-md shadow-blue-500/20 cursor-pointer"
-              >
-                Close Help
-              </button>
-            </div>
-          </div>
-        </div>
+        <HelpPanel
+          currentUser={currentUser}
+          onClose={() => setIsHelpOpen(false)}
+        />
       )}
     </>
   );

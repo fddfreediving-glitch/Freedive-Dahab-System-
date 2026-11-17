@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
+import { removeTemporaryDirectory } from './test-cleanup.js';
 
 const originalDirectory = process.cwd();
 const temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'freedive-booking-safety-test-'));
@@ -51,17 +52,7 @@ after(async () => {
   db.pragma('wal_checkpoint(TRUNCATE)');
   db.close();
   process.chdir(originalDirectory);
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      rmSync(temporaryDirectory, { recursive: true, force: true });
-      break;
-    } catch (error) {
-      if (attempt >= 4 || !(error instanceof Error && 'code' in error && ['EPERM', 'EACCES', 'EBUSY'].includes(String(error.code)))) {
-        throw error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
-    }
-  }
+  await removeTemporaryDirectory(temporaryDirectory);
 });
 
 async function request(
@@ -168,6 +159,8 @@ test('accepts a waiver exactly 365 days old with physician clearance and an exac
   assert.equal(invoice.paid_amount, 30);
   assert.equal(invoice.total_amount, 100);
   assert.equal((db.prepare('SELECT COUNT(*) AS count FROM payments WHERE invoice_id = ?').get(result.data.invoiceId) as { count: number }).count, 1);
+  const lineItem = db.prepare('SELECT category FROM invoice_items WHERE invoice_id = ?').get(result.data.invoiceId) as { category: string };
+  assert.equal(lineItem.category, 'course');
 });
 
 test('blocks bookings with expired or missing safety criteria regardless of caller-supplied payment status', async () => {

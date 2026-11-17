@@ -23,7 +23,7 @@ export function seedInitialData() {
       role: 'owner',
       phone: '+20 100 234 5678',
       languages: JSON.stringify(['English', 'Arabic']),
-      certifications: JSON.stringify(['AIDA Instructor Trainer', 'Molchanovs IT', 'EFR First Aid Instructor']),
+      certifications: JSON.stringify(['SSI Instructor Trainer', 'SSI Freediver Instructor', 'First Aid Instructor']),
       monthly_salary: 3500,
       hourly_rate: 45,
       session_commission: 30,
@@ -36,7 +36,7 @@ export function seedInitialData() {
       role: 'operations_manager',
       phone: '+20 101 987 6543',
       languages: JSON.stringify(['English', 'Arabic', 'Russian']),
-      certifications: JSON.stringify(['AIDA 4 Master', 'Chamber Emergency Tender']),
+      certifications: JSON.stringify(['SSI Level 3', 'Chamber Emergency Tender']),
       monthly_salary: 1800,
       hourly_rate: 20,
       session_commission: 15,
@@ -49,7 +49,7 @@ export function seedInitialData() {
       role: 'front_desk_crm',
       phone: '+20 109 456 7890',
       languages: JSON.stringify(['English', 'Arabic', 'French']),
-      certifications: JSON.stringify(['AIDA 2 Freediver']),
+      certifications: JSON.stringify(['SSI Level 1']),
       monthly_salary: 1100,
       hourly_rate: 12,
       session_commission: 0,
@@ -62,7 +62,7 @@ export function seedInitialData() {
       role: 'instructor',
       phone: '+20 112 345 6789',
       languages: JSON.stringify(['English', 'Arabic', 'German']),
-      certifications: JSON.stringify(['AIDA Master Instructor', 'Molchanovs Wave 3 Instructor', '85m Deep Safety']),
+      certifications: JSON.stringify(['SSI Instructor Trainer', 'SSI Level 3', '85m Deep Safety']),
       monthly_salary: 950,
       hourly_rate: 25,
       session_commission: 35,
@@ -75,7 +75,7 @@ export function seedInitialData() {
       role: 'instructor',
       phone: '+20 115 876 5432',
       languages: JSON.stringify(['English', 'Russian', 'Italian']),
-      certifications: JSON.stringify(['Molchanovs Wave 2 Instructor', 'Mouthfill Equalization Specialist']),
+      certifications: JSON.stringify(['SSI Instructor', 'Mouthfill Specialist']),
       monthly_salary: 950,
       hourly_rate: 25,
       session_commission: 35,
@@ -133,111 +133,111 @@ export function seedInitialData() {
     );
   }
 
-  // 2. Seed Course Catalog
+  // 2. Seed Course Catalog (SSI curriculum; prices mirror src/data/posCatalog.ts)
   const courses = [
     {
-      id: 'crs_aida1',
-      code: 'AIDA-1',
-      title: 'AIDA 1 Discover Freediving',
-      agency: 'AIDA',
+      id: 'crs_ssi_freediver',
+      code: 'SSI-L1',
+      title: 'SSI Freediver',
+      agency: 'SSI',
       level: 'Beginner',
-      duration_days: 1,
+      duration_days: 3,
       max_capacity: 4,
-      price_eur: 140,
-      price_egp: 7200,
-      description: 'Introductory 1-day experience focusing on basic breathing mechanics, relaxation, finning technique, and shallow coastal reef diving in Lighthouse Bay.',
-      prerequisites: 'Able to swim 100m unassisted.',
+      price_eur: 310,
+      price_egp: 0,
+      description: 'Three-day entry certification covering breathing, relaxation, equalization, finning and rescue skills, with confined-water sessions and open-water dives to 12 m in Lighthouse Bay.',
+      prerequisites: 'Able to swim 200 m unassisted and medically fit to dive.',
     },
     {
-      id: 'crs_aida2',
-      code: 'AIDA-2',
-      title: 'AIDA 2 Freediver Course',
-      agency: 'AIDA',
+      id: 'crs_ssi_advanced',
+      code: 'SSI-L2',
+      title: 'SSI Advanced Freediver',
+      agency: 'SSI',
       level: 'Intermediate',
       duration_days: 3,
       max_capacity: 4,
-      price_eur: 320,
-      price_egp: 16500,
-      description: 'Comprehensive 3-day foundation course. Learn Frenzel equalization, duck dives, safety protocols, buddy rescue at 10m, and depth goals between 16m and 20m.',
-      prerequisites: 'Able to swim 200m non-stop or 300m with mask/fins.',
+      price_eur: 360,
+      price_egp: 0,
+      description: 'Builds on the Freediver level with deeper equalization, free immersion and constant weight technique, and structured open-water dives to 20 m.',
+      prerequisites: 'SSI Freediver certification or equivalent.',
     },
     {
-      id: 'crs_aida3',
-      code: 'AIDA-3',
-      title: 'AIDA 3 Advanced Freediver',
-      agency: 'AIDA',
+      id: 'crs_ssi_performance',
+      code: 'SSI-L3',
+      title: 'SSI Performance Freediver',
+      agency: 'SSI',
       level: 'Advanced',
       duration_days: 4,
-      max_capacity: 4,
-      price_eur: 410,
-      price_egp: 21000,
-      description: 'Advanced course focusing on free fall, depth adaptation, thoracic stretching, Frenzel perfection, and safe depth training up to 24m–30m in Blue Hole.',
-      prerequisites: 'AIDA 2 or equivalent certified freediver.',
-    },
-    {
-      id: 'crs_aida4',
-      code: 'AIDA-4',
-      title: 'AIDA 4 Master Freediver',
-      agency: 'AIDA',
-      level: 'Master',
-      duration_days: 5,
       max_capacity: 3,
-      price_eur: 550,
-      price_egp: 28500,
-      description: 'Elite training for assistant instructors and deep divers. Includes FRC dives, deep warm-up protocols, safety management, and training depth to 32m–38m.',
-      prerequisites: 'AIDA 3 certification + current First Aid/EFR certification.',
+      price_eur: 480,
+      price_egp: 0,
+      description: 'Advanced training for divers targeting 30 m: refined Frenzel and mouthfill, turn and freefall technique, and coached depth progression in the Blue Hole.',
+      prerequisites: 'SSI Advanced Freediver certification or equivalent.',
     },
     {
-      id: 'crs_molch_w1',
-      code: 'MOLCH-W1',
-      title: 'Molchanovs Wave 1 Freediver',
-      agency: 'Molchanovs',
-      level: 'Beginner',
-      duration_days: 3,
-      max_capacity: 4,
-      price_eur: 340,
-      price_egp: 17500,
-      description: 'The world-renowned Molchanovs curriculum for newcomers. Mastery of finning dynamics, relaxation breathing, and deep calmness in the Red Sea up to 20m.',
-      prerequisites: 'Comfortable in ocean water, 200m swim.',
+      id: 'crs_ssi_react_right',
+      code: 'SSI-RR',
+      title: 'SSI React Right',
+      agency: 'SSI',
+      level: 'Specialty',
+      duration_days: 1,
+      max_capacity: 6,
+      price_eur: 130,
+      price_egp: 0,
+      description: 'First aid, CPR and emergency oxygen provider course for divers and dive professionals.',
+      prerequisites: 'None.',
     },
     {
-      id: 'crs_molch_w2',
-      code: 'MOLCH-W2',
-      title: 'Molchanovs Wave 2 Advanced',
-      agency: 'Molchanovs',
-      level: 'Advanced',
-      duration_days: 4,
-      max_capacity: 4,
-      price_eur: 430,
-      price_egp: 22000,
-      description: 'Deep diving mastery. Dolphin kick technique, Frenzel equalization under pressure, lung volume optimization, and dives up to 30m.',
-      prerequisites: 'Molchanovs Wave 1 or AIDA 2 certified.',
-    },
-    {
-      id: 'crs_ws_eq',
-      code: 'SPEC-EQ',
-      title: 'Dahab Equalization & Frenzel Clinic',
-      agency: 'Freedive Dahab Specialty',
+      id: 'crs_ssi_marine_ecology',
+      code: 'SSI-ME',
+      title: 'SSI Marine Ecology',
+      agency: 'SSI',
       level: 'Specialty',
       duration_days: 2,
       max_capacity: 6,
-      price_eur: 190,
-      price_egp: 9800,
-      description: 'Otovent diagnostics, soft palate control, glottis independence, reverse packing drills, and personal equalization overcoming plateaus.',
-      prerequisites: 'Any certified freediver struggling with equalization.',
+      price_eur: 150,
+      price_egp: 0,
+      description: 'Red Sea reef ecosystems, conservation and responsible diving practices around Dahab’s dive sites.',
+      prerequisites: 'Open to divers and snorkelers.',
     },
     {
-      id: 'crs_safari_bh',
-      code: 'EXP-BLUEHOLE',
-      title: 'Blue Hole & Bells Apnea Safari',
+      id: 'crs_mouthfill',
+      code: 'FD-MOUTHFILL',
+      title: 'Mouthfill Workshop',
       agency: 'Freedive Dahab Specialty',
-      level: 'Intermediate',
+      level: 'Advanced',
       duration_days: 1,
-      max_capacity: 8,
-      price_eur: 95,
-      price_egp: 4900,
-      description: 'Guided excursion through The Bells chimney drop, reef wall glide, and dedicated training buoy session inside Dahab Blue Hole with camel lunch included.',
-      prerequisites: 'Certified Level 1 / AIDA 2 minimum.',
+      max_capacity: 4,
+      price_eur: 120,
+      price_egp: 0,
+      description: 'Practical workshop on mouthfill equalization for divers progressing beyond 25 m, with pool and open-water feedback.',
+      prerequisites: 'SSI Advanced Freediver or equivalent.',
+    },
+    {
+      id: 'crs_training_techniques',
+      code: 'FD-TECHNIQUE',
+      title: 'Training Techniques',
+      agency: 'Freedive Dahab Specialty',
+      level: 'All levels',
+      duration_days: 1,
+      max_capacity: 4,
+      price_eur: 160,
+      price_egp: 0,
+      description: 'Coached technique session covering finning, body position, turns and safety drills. €135 per person for two or more.',
+      prerequisites: 'SSI Freediver or equivalent.',
+    },
+    {
+      id: 'crs_monofin',
+      code: 'FD-MONOFIN',
+      title: 'Monofin Class',
+      agency: 'Freedive Dahab Specialty',
+      level: 'All levels',
+      duration_days: 1,
+      max_capacity: 4,
+      price_eur: 125,
+      price_egp: 0,
+      description: 'Introduction to monofin technique with video review and coached open-water practice. €110 per person for two or more.',
+      prerequisites: 'Comfortable in open water.',
     },
   ];
 
@@ -260,8 +260,8 @@ export function seedInitialData() {
       phone: '+49 171 992 4810',
       nationality: 'Germany',
       date_of_birth: '1995-04-12',
-      certification_agency: 'Molchanovs',
-      certification_level: 'Wave 2',
+      certification_agency: 'SSI',
+      certification_level: 'Level 2',
       total_depth_pb: 38.5,
       static_apnea_pb: '04:22',
       medical_waiver_signed: 1,
@@ -282,8 +282,8 @@ export function seedInitialData() {
       phone: '+20 100 812 3491',
       nationality: 'Egypt',
       date_of_birth: '1992-08-25',
-      certification_agency: 'AIDA',
-      certification_level: 'AIDA 3',
+      certification_agency: 'SSI',
+      certification_level: 'Level 2',
       total_depth_pb: 43.0,
       static_apnea_pb: '05:05',
       medical_waiver_signed: 1,
@@ -294,7 +294,7 @@ export function seedInitialData() {
       insurance_details: 'Egypt National Health + DiveCover Egypt',
       source_channel: 'Referral',
       status: 'active',
-      notes: 'Preparing for AIDA 4 Master course in November.',
+      notes: 'Preparing for the SSI Performance Freediver course in November.',
     },
     {
       id: 'std_03',
@@ -310,13 +310,13 @@ export function seedInitialData() {
       static_apnea_pb: '01:50',
       medical_waiver_signed: 1,
       medical_waiver_date: '2026-10-28',
-      medical_notes: 'No medical conditions declared. Completed standard RSTC/AIDA medical statement.',
+      medical_notes: 'No medical conditions declared. Completed the standard freediving medical statement.',
       emergency_contact_name: 'Pierre Martin (Father)',
       emergency_contact_phone: '+33 6 98 76 54 32',
       insurance_details: 'Mondial Assistance / Allianz Travel',
       source_channel: 'Website',
       status: 'active',
-      notes: 'Enrolled in AIDA 1 Discover Freediving, very excited to explore Red Sea coral.',
+      notes: 'Enrolled in SSI Freediver, very excited to explore Red Sea coral.',
     },
     {
       id: 'std_04',
@@ -326,8 +326,8 @@ export function seedInitialData() {
       phone: '+39 340 555 1234',
       nationality: 'Italy',
       date_of_birth: '1989-02-17',
-      certification_agency: 'AIDA',
-      certification_level: 'AIDA 4',
+      certification_agency: 'SSI',
+      certification_level: 'Level 3',
       total_depth_pb: 56.0,
       static_apnea_pb: '05:40',
       medical_waiver_signed: 1,
@@ -348,8 +348,8 @@ export function seedInitialData() {
       phone: '+962 7 9123 4567',
       nationality: 'Jordan',
       date_of_birth: '1996-06-30',
-      certification_agency: 'Molchanovs',
-      certification_level: 'Wave 1',
+      certification_agency: 'SSI',
+      certification_level: 'Level 1',
       total_depth_pb: 22.0,
       static_apnea_pb: '03:10',
       medical_waiver_signed: 1,
@@ -360,7 +360,7 @@ export function seedInitialData() {
       insurance_details: 'Royal Jordanian Travel Medical',
       source_channel: 'WhatsApp',
       status: 'active',
-      notes: 'Taking Equalization Clinic to unlock deep Frenzel for Wave 2.',
+      notes: 'Taking the Mouthfill workshop to prepare for SSI Level 2.',
     },
     {
       id: 'std_06',
@@ -371,7 +371,7 @@ export function seedInitialData() {
       nationality: 'Czech Republic',
       date_of_birth: '1993-09-14',
       certification_agency: 'SSI',
-      certification_level: 'Freediving Level 1',
+      certification_level: 'Level 1',
       total_depth_pb: 18.0,
       static_apnea_pb: '02:45',
       medical_waiver_signed: 0,
@@ -382,7 +382,7 @@ export function seedInitialData() {
       insurance_details: 'Europe Assistance',
       source_channel: 'Walk-in',
       status: 'inquiry',
-      notes: 'Inquiring about crossing over from SSI Level 1 to Molchanovs Wave 2.',
+      notes: 'Inquiring about progressing from SSI Level 1 to Level 2.',
     },
     {
       id: 'std_07',
@@ -392,8 +392,8 @@ export function seedInitialData() {
       phone: '+81 90 4455 6677',
       nationality: 'Japan',
       date_of_birth: '1991-03-22',
-      certification_agency: 'AIDA',
-      certification_level: 'AIDA 2',
+      certification_agency: 'SSI',
+      certification_level: 'Level 1',
       total_depth_pb: 27.0,
       static_apnea_pb: '03:45',
       medical_waiver_signed: 1,
@@ -404,22 +404,44 @@ export function seedInitialData() {
       insurance_details: 'Tokio Marine Dive Insurance',
       source_channel: 'Instagram',
       status: 'active',
-      notes: 'Interested in Blue Hole apnea safari and underwater photography.',
+      notes: 'Interested in Blue Hole training sessions and underwater photography.',
     },
   ];
 
+  const studentStays: Record<string, {
+    whatsapp: string;
+    arrival_date: string;
+    departure_date: string;
+    needs_accommodation: number;
+    needs_airport_transfer: number;
+  }> = {
+    std_01: { whatsapp: '+49 171 992 4810', arrival_date: '2026-11-01', departure_date: '2026-11-09', needs_accommodation: 1, needs_airport_transfer: 1 },
+    std_02: { whatsapp: '+20 100 812 3491', arrival_date: '2026-11-01', departure_date: '2026-11-05', needs_accommodation: 0, needs_airport_transfer: 0 },
+    std_03: { whatsapp: '+33 6 12 34 56 78', arrival_date: '2026-10-27', departure_date: '2026-11-06', needs_accommodation: 1, needs_airport_transfer: 1 },
+    std_04: { whatsapp: '+39 340 555 1234', arrival_date: '2026-11-08', departure_date: '2026-11-18', needs_accommodation: 1, needs_airport_transfer: 0 },
+    std_05: { whatsapp: '+962 7 9123 4567', arrival_date: '2026-10-26', departure_date: '2026-11-02', needs_accommodation: 1, needs_airport_transfer: 1 },
+    std_06: { whatsapp: '+420 721 849 201', arrival_date: '2026-11-20', departure_date: '2026-11-27', needs_accommodation: 1, needs_airport_transfer: 0 },
+    std_07: { whatsapp: '+81 90 4455 6677', arrival_date: '2026-11-03', departure_date: '2026-11-12', needs_accommodation: 0, needs_airport_transfer: 1 },
+  };
+
   const insertStudent = db.prepare(`
-    INSERT INTO students (id, first_name, last_name, email, phone, nationality, date_of_birth, certification_agency, certification_level, total_depth_pb, static_apnea_pb, medical_waiver_signed, medical_waiver_date, medical_notes, emergency_contact_name, emergency_contact_phone, insurance_details, source_channel, status, notes, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO students (id, first_name, last_name, email, phone, whatsapp, arrival_date, departure_date, needs_accommodation, needs_airport_transfer, nationality, date_of_birth, certification_agency, certification_level, total_depth_pb, static_apnea_pb, medical_waiver_signed, medical_waiver_date, medical_notes, emergency_contact_name, emergency_contact_phone, insurance_details, source_channel, status, notes, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   for (const s of students) {
+    const stay = studentStays[s.id];
     insertStudent.run(
       s.id,
       s.first_name,
       s.last_name,
       s.email,
       s.phone,
+      stay?.whatsapp ?? s.phone,
+      stay?.arrival_date ?? null,
+      stay?.departure_date ?? null,
+      stay?.needs_accommodation ?? 0,
+      stay?.needs_airport_transfer ?? 0,
       s.nationality,
       s.date_of_birth,
       s.certification_agency,
@@ -444,57 +466,61 @@ export function seedInitialData() {
   const sessions = [
     {
       id: 'ses_01',
-      course_id: 'crs_aida2',
+      course_id: 'crs_ssi_freediver',
       instructor_id: 'usr_inst_01', // Tariq Fayed
       start_date: '2026-11-02',
       end_date: '2026-11-04',
       location: 'Lighthouse Bay & Blue Hole',
       status: 'scheduled',
       max_capacity: 4,
-      notes: 'Day 1 theory & pool, Day 2 Lighthouse 12m-16m, Day 3 Blue Hole depth session.',
+      buoy_count: 2,
+      notes: 'Day 1 theory & confined water, Day 2 Lighthouse 8m-12m, Day 3 Blue Hole open-water dives.',
     },
     {
       id: 'ses_02',
-      course_id: 'crs_molch_w2',
+      course_id: 'crs_ssi_advanced',
       instructor_id: 'usr_inst_02', // Elena Rostova
       start_date: '2026-11-03',
-      end_date: '2026-11-06',
+      end_date: '2026-11-05',
       location: 'Blue Hole 50m Line',
       status: 'scheduled',
       max_capacity: 3,
-      notes: 'Wave 2 deep adaptation, mouthfill foundations, FRC safety dives.',
+      buoy_count: 2,
+      notes: 'Advanced equalization, free immersion and constant weight progression to 20m.',
     },
     {
       id: 'ses_03',
-      course_id: 'crs_ws_eq',
+      course_id: 'crs_mouthfill',
       instructor_id: 'usr_inst_02', // Elena Rostova
       start_date: '2026-11-05',
-      end_date: '2026-11-06',
+      end_date: '2026-11-05',
       location: 'Freedive Dahab Studio A & Lighthouse Bay',
       status: 'scheduled',
-      max_capacity: 6,
-      notes: 'Hands-on Otovent feedback, camera analysis of soft palate movement.',
+      max_capacity: 4,
+      buoy_count: 1,
+      notes: 'Hands-on mouthfill feedback, camera analysis of soft palate control.',
     },
     {
       id: 'ses_04',
-      course_id: 'crs_safari_bh',
+      course_id: 'crs_ssi_marine_ecology',
       instructor_id: 'usr_inst_01', // Tariq Fayed
       start_date: '2026-11-07',
-      end_date: '2026-11-07',
+      end_date: '2026-11-08',
       location: 'The Bells & Dahab Blue Hole',
       status: 'scheduled',
       max_capacity: 8,
-      notes: 'Jeep departure from center at 08:30 AM with safety support and photographer.',
+      buoy_count: 2,
+      notes: 'Reef ecology presentations plus guided survey dives; jeep departure at 08:30.',
     },
   ];
 
   const insertSession = db.prepare(`
-    INSERT INTO course_sessions (id, course_id, instructor_id, start_date, end_date, location, status, max_capacity, notes, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO course_sessions (id, course_id, instructor_id, start_date, end_date, location, status, max_capacity, buoy_count, notes, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   for (const ses of sessions) {
-    insertSession.run(ses.id, ses.course_id, ses.instructor_id, ses.start_date, ses.end_date, ses.location, ses.status, ses.max_capacity, ses.notes, now);
+    insertSession.run(ses.id, ses.course_id, ses.instructor_id, ses.start_date, ses.end_date, ses.location, ses.status, ses.max_capacity, ses.buoy_count, ses.notes, now);
   }
 
   // Bookings
@@ -503,11 +529,11 @@ export function seedInitialData() {
       id: 'bkg_01',
       booking_number: 'FD-2026-001',
       student_id: 'std_03', // Chloe Martin
-      course_id: 'crs_aida2',
+      course_id: 'crs_ssi_freediver',
       session_id: 'ses_01',
       booking_date: '2026-10-28',
       status: 'confirmed',
-      price: 320,
+      price: 310,
       currency: 'EUR',
       payment_status: 'paid',
       notes: 'Deposit and balance settled in full via Credit Card.',
@@ -516,11 +542,11 @@ export function seedInitialData() {
       id: 'bkg_02',
       booking_number: 'FD-2026-002',
       student_id: 'std_01', // Maya Lindemann
-      course_id: 'crs_molch_w2',
+      course_id: 'crs_ssi_advanced',
       session_id: 'ses_02',
       booking_date: '2026-10-26',
       status: 'confirmed',
-      price: 430,
+      price: 360,
       currency: 'EUR',
       payment_status: 'paid',
       notes: 'Rental carbon bifins requested (Leaderfins size 39-40).',
@@ -529,24 +555,24 @@ export function seedInitialData() {
       id: 'bkg_03',
       booking_number: 'FD-2026-003',
       student_id: 'std_05', // Sarah Al-Khatib
-      course_id: 'crs_ws_eq',
+      course_id: 'crs_mouthfill',
       session_id: 'ses_03',
       booking_date: '2026-10-27',
       status: 'confirmed',
-      price: 190,
+      price: 120,
       currency: 'EUR',
       payment_status: 'partially_paid',
-      notes: '50 EUR deposit received via InstaPay; 140 EUR balance due on first morning.',
+      notes: '50 EUR deposit received via InstaPay; 70 EUR balance due on the workshop day.',
     },
     {
       id: 'bkg_04',
       booking_number: 'FD-2026-004',
       student_id: 'std_07', // Kenji Sato
-      course_id: 'crs_safari_bh',
+      course_id: 'crs_ssi_marine_ecology',
       session_id: 'ses_04',
       booking_date: '2026-10-29',
       status: 'confirmed',
-      price: 95,
+      price: 150,
       currency: 'EUR',
       payment_status: 'paid',
       notes: 'Paid via PayPal.',
@@ -555,14 +581,14 @@ export function seedInitialData() {
       id: 'bkg_05',
       booking_number: 'FD-2026-005',
       student_id: 'std_02', // Ahmed Mansour
-      course_id: 'crs_safari_bh',
+      course_id: 'crs_ssi_marine_ecology',
       session_id: 'ses_04',
       booking_date: '2026-10-30',
       status: 'confirmed',
-      price: 4900,
-      currency: 'EGP',
+      price: 150,
+      currency: 'EUR',
       payment_status: 'paid',
-      notes: 'Local resident rate in EGP.',
+      notes: 'Paid in EUR; EGP receipt issued at the day’s exchange rate.',
     },
   ];
 
@@ -596,7 +622,7 @@ export function seedInitialData() {
     },
     {
       id: 'act_02',
-      title: 'Lighthouse Bay AIDA 2 Confined Water & Rescue Drills',
+      title: 'Lighthouse Bay SSI Freediver Confined Water & Rescue Drills',
       activity_type: 'course_session',
       location: 'Lighthouse',
       activity_date: '2026-11-02',
@@ -666,21 +692,22 @@ export function seedInitialData() {
       issue_date: '2026-10-28',
       due_date: '2026-11-02',
       currency: 'EUR',
-      subtotal: 320,
+      subtotal: 310,
       tax_rate: 0,
       tax_amount: 0,
-      total_amount: 320,
-      paid_amount: 320,
+      total_amount: 310,
+      paid_amount: 310,
       status: 'paid',
-      notes: 'AIDA 2 Course registration including AIDA certification card & gear rental.',
+      notes: 'SSI Freediver course registration including certification card & gear rental.',
       items: [
-        { description: 'AIDA 2 Freediver Course Tuition (3 days)', quantity: 1, unit_price: 280, total_price: 280 },
-        { description: 'Gear Package Rental (3mm Wetsuit + Bifins + Mask)', quantity: 1, unit_price: 40, total_price: 40 },
+        { category: 'course', description: 'SSI Freediver Course Tuition (3 days)', quantity: 1, unit_price: 270, total_price: 270 },
+        { category: 'gear_rental', description: 'Gear Package Rental (3mm Wetsuit + Bifins + Mask)', quantity: 1, unit_price: 40, total_price: 40 },
       ],
       payment: {
-        amount: 320,
+        amount: 310,
         currency: 'EUR',
         payment_method: 'Credit Card',
+        payment_account: 'Card Terminal EUR',
         payment_date: '2026-10-28',
         reference_number: 'CC-STR-941824',
         notes: 'Online terminal confirmation #941824',
@@ -694,21 +721,22 @@ export function seedInitialData() {
       issue_date: '2026-10-26',
       due_date: '2026-11-03',
       currency: 'EUR',
-      subtotal: 470,
+      subtotal: 400,
       tax_rate: 0,
       tax_amount: 0,
-      total_amount: 470,
-      paid_amount: 470,
+      total_amount: 400,
+      paid_amount: 400,
       status: 'paid',
-      notes: 'Molchanovs Wave 2 course + Carbon fin test trial.',
+      notes: 'SSI Advanced Freediver course + carbon fin test trial.',
       items: [
-        { description: 'Molchanovs Wave 2 Course (4 days)', quantity: 1, unit_price: 430, total_price: 430 },
-        { description: 'Leaderfins Carbon Fin Rental Upgrade', quantity: 1, unit_price: 40, total_price: 40 },
+        { category: 'course', description: 'SSI Advanced Freediver Course (3 days)', quantity: 1, unit_price: 360, total_price: 360 },
+        { category: 'gear_rental', description: 'Leaderfins Carbon Fin Rental Upgrade', quantity: 1, unit_price: 40, total_price: 40 },
       ],
       payment: {
-        amount: 470,
+        amount: 400,
         currency: 'EUR',
         payment_method: 'Bank Transfer',
+        payment_account: 'Bank EUR',
         payment_date: '2026-10-27',
         reference_number: 'SEPA-DE-910283',
         notes: 'Deutsche Bank transfer reference #910283',
@@ -722,20 +750,21 @@ export function seedInitialData() {
       issue_date: '2026-10-27',
       due_date: '2026-11-05',
       currency: 'EUR',
-      subtotal: 190,
+      subtotal: 120,
       tax_rate: 0,
       tax_amount: 0,
-      total_amount: 190,
+      total_amount: 120,
       paid_amount: 50,
       status: 'partially_paid',
-      notes: '50 EUR deposit received; 140 EUR balance due upon arrival.',
+      notes: '50 EUR deposit received; 70 EUR balance due on the workshop day.',
       items: [
-        { description: 'Frenzel & Equalization Intensive 2-day Workshop', quantity: 1, unit_price: 190, total_price: 190 },
+        { category: 'workshop', description: 'Mouthfill Workshop (1 day)', quantity: 1, unit_price: 120, total_price: 120 },
       ],
       payment: {
         amount: 50,
         currency: 'EUR',
         payment_method: 'InstaPay Egypt',
+        payment_account: 'InstaPay EUR',
         payment_date: '2026-10-27',
         reference_number: 'IP-EG-774910',
         notes: 'Deposit paid via InstaPay exchange equivalent',
@@ -757,7 +786,7 @@ export function seedInitialData() {
       status: 'issued',
       notes: '10-Session Blue Hole Deep Training Buoy & Safety Diver Pass (November 2026).',
       items: [
-        { description: 'Blue Hole 10-Session Apnea Line & Safety Pass', quantity: 1, unit_price: 350, total_price: 350 },
+        { category: 'training', description: 'Blue Hole 10-Session Apnea Line & Safety Pass', quantity: 1, unit_price: 350, total_price: 350 },
       ],
       payment: null,
     },
@@ -769,13 +798,13 @@ export function seedInitialData() {
   `);
 
   const insertInvoiceItem = db.prepare(`
-    INSERT INTO invoice_items (id, invoice_id, description, quantity, unit_price, total_price)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO invoice_items (id, invoice_id, category, description, quantity, unit_price, total_price)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
 
   const insertPayment = db.prepare(`
-    INSERT INTO payments (id, invoice_id, amount, currency, payment_method, payment_date, reference_number, notes, recorded_by, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'usr_fin_01', ?)
+    INSERT INTO payments (id, invoice_id, amount, currency, payment_method, payment_account, payment_date, reference_number, notes, recorded_by, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'usr_fin_01', ?)
   `);
 
   for (const inv of invoices) {
@@ -800,7 +829,7 @@ export function seedInitialData() {
 
     for (let idx = 0; idx < inv.items.length; idx++) {
       const it = inv.items[idx];
-      insertInvoiceItem.run(`item_${inv.id}_${idx}`, inv.id, it.description, it.quantity, it.unit_price, it.total_price);
+      insertInvoiceItem.run(`item_${inv.id}_${idx}`, inv.id, it.category || 'other', it.description, it.quantity, it.unit_price, it.total_price);
     }
 
     if (inv.payment) {
@@ -810,6 +839,7 @@ export function seedInitialData() {
         inv.payment.amount,
         inv.payment.currency,
         inv.payment.payment_method,
+        inv.payment.payment_account,
         inv.payment.payment_date,
         inv.payment.reference_number,
         inv.payment.notes,
@@ -827,6 +857,8 @@ export function seedInitialData() {
       vendor_name: 'Dahab City Council & Protected Areas Authority',
       amount: 4500,
       currency: 'EGP',
+      payment_method: 'Cash EGP',
+      payment_account: 'Cash EGP',
       expense_date: '2026-10-25',
       status: 'paid',
       approved_by: 'usr_owner_01',
@@ -840,6 +872,8 @@ export function seedInitialData() {
       vendor_name: 'Sharm & Dahab Medical Gases Depot',
       amount: 3200,
       currency: 'EGP',
+      payment_method: 'Cash EGP',
+      payment_account: 'Cash EGP',
       expense_date: '2026-10-27',
       status: 'paid',
       approved_by: 'usr_owner_01',
@@ -853,6 +887,8 @@ export function seedInitialData() {
       vendor_name: 'Captain Mahmoud Sea Charters',
       amount: 280,
       currency: 'EUR',
+      payment_method: 'Bank Transfer',
+      payment_account: 'Bank EUR',
       expense_date: '2026-10-29',
       status: 'approved',
       approved_by: 'usr_owner_01',
@@ -866,6 +902,8 @@ export function seedInitialData() {
       vendor_name: 'Octopus Freediving Service Hub',
       amount: 195,
       currency: 'EUR',
+      payment_method: 'Bank Transfer',
+      payment_account: 'Bank EUR',
       expense_date: '2026-10-30',
       status: 'approved',
       approved_by: 'usr_owner_01',
@@ -875,8 +913,8 @@ export function seedInitialData() {
   ];
 
   const insertExpense = db.prepare(`
-    INSERT INTO expenses (id, expense_number, category, vendor_name, amount, currency, expense_date, status, approved_by, description, receipt_ref, created_by, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'usr_fin_01', ?)
+    INSERT INTO expenses (id, expense_number, category, vendor_name, amount, currency, payment_method, payment_account, expense_date, status, approved_by, description, receipt_ref, created_by, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'usr_fin_01', ?)
   `);
 
   for (const exp of expenses) {
@@ -887,6 +925,8 @@ export function seedInitialData() {
       exp.vendor_name,
       exp.amount,
       exp.currency,
+      exp.payment_method,
+      exp.payment_account,
       exp.expense_date,
       exp.status,
       exp.approved_by,
@@ -945,7 +985,7 @@ export function seedInitialData() {
       net_pay: 1420,
       currency: 'EUR',
       status: 'approved',
-      notes: 'Equalization clinic instruction and Wave 2 courses.',
+      notes: 'Mouthfill workshops and advanced course instruction.',
     },
     {
       id: 'pr_rec_03',
@@ -1041,10 +1081,10 @@ export function seedInitialData() {
     {
       id: 'eq_03',
       barcode: 'FD-GEAR-003',
-      item_name: 'Molchanovs Pro Monofin 3',
+      item_name: 'Carbon Pro Monofin 3',
       category: 'monofins',
       size: 'Size EU 42',
-      brand_model: 'Molchanovs Pro Carbon 3',
+      brand_model: 'Carbon Pro 3',
       quantity_total: 2,
       quantity_available: 2,
       condition: 'excellent',
@@ -1147,10 +1187,10 @@ export function seedInitialData() {
       lead_name: 'Sophia Van Dijk',
       lead_email: 'sophia.vandijk@amsterdam.nl',
       lead_phone: '+31 6 5544 3322',
-      course_interest: 'Molchanovs Wave 1 + 2 Fast Track',
+      course_interest: 'Beginner + Advanced Combo',
       channel: 'WhatsApp',
       status: 'proposal_sent',
-      message: 'Hello! I am planning a 2-week freediving holiday in Dahab starting mid-November. Can I combine Wave 1 and Wave 2? Also need accommodation recommendations near Lighthouse.',
+      message: 'Hello! I am planning a 2-week freediving holiday in Dahab starting mid-November. Can I combine the Beginner and Advanced courses? Also need accommodation recommendations near Lighthouse.',
       follow_up_date: '2026-11-03',
       assigned_to: 'usr_crm_01',
     },
@@ -1159,7 +1199,7 @@ export function seedInitialData() {
       lead_name: 'Omar Sherif',
       lead_email: 'o.sherif.alex@yahoo.com',
       lead_phone: '+20 122 334 4556',
-      course_interest: 'AIDA 2 Freediver Course',
+      course_interest: 'SSI Freediver course',
       channel: 'Instagram',
       status: 'new',
       message: 'Salam! I am a spearfisher from Alexandria. Want to learn proper Frenzel and safety so I do not risk shallow water blackouts. When is the next weekend course?',
@@ -1209,6 +1249,28 @@ export function seedInitialData() {
   db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('currency_secondary', 'EGP');
   db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('default_vat_rate', '0.00'); // Note: reviewable by qualified tax adviser
   db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('system_version', '1.0.0-PROD');
+
+  // 11b. Center business profile & notification defaults (never overwrite existing)
+  const existingCenterSettings = db.prepare('SELECT COUNT(*) as count FROM center_settings').get() as { count: number };
+  if (existingCenterSettings.count === 0) {
+    const insertCenterSetting = db.prepare('INSERT INTO center_settings (key, value, updated_at) VALUES (?, ?, ?)');
+    const centerDefaults: Record<string, string> = {
+      center_name: 'Freedive Dahab',
+      address: 'Dahab, South Sinai, Egypt',
+      phone: '+20 100 234 5678',
+      whatsapp: '+20 100 234 5678',
+      email: 'info@freedivedahab.com',
+      currency_default: 'EUR',
+      timezone: 'Africa/Cairo',
+      notify_deposit_reminders: 'true',
+      notify_low_stock_alerts: 'true',
+      notify_waiver_expiring: 'true',
+      notify_daily_summary_email: 'false',
+    };
+    for (const [key, value] of Object.entries(centerDefaults)) {
+      insertCenterSetting.run(key, value, now);
+    }
+  }
 
   // 12. Seed initial audit log entry
   logAudit({

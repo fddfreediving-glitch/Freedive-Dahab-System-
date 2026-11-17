@@ -22,6 +22,7 @@ import { NavTab } from './Navigation';
 interface ReferenceNavbarProps {
   currentUser: User | null;
   onRoleSwitch: (role: UserRole) => void;
+  demoEnabled?: boolean;
   lang: Language;
   onLanguageChange: (lang: Language) => void;
   onLogout: () => void;
@@ -37,6 +38,7 @@ interface ReferenceNavbarProps {
 export const ReferenceNavbar: React.FC<ReferenceNavbarProps> = ({
   currentUser,
   onRoleSwitch,
+  demoEnabled = false,
   lang,
   onLanguageChange,
   onLogout,
@@ -156,7 +158,8 @@ export const ReferenceNavbar: React.FC<ReferenceNavbarProps> = ({
           )}
         </button>
 
-        {/* Role Simulator Pill */}
+        {/* Role Simulator Pill (local demo only) */}
+        {demoEnabled && (
         <div className="relative">
           <button
             onClick={() => setRoleMenuOpen(!roleMenuOpen)}
@@ -200,6 +203,7 @@ export const ReferenceNavbar: React.FC<ReferenceNavbarProps> = ({
             </div>
           )}
         </div>
+        )}
 
         {/* User Greeting & Avatar matching the reference: "Hi, Tom" with circle avatar */}
         <div className="relative">

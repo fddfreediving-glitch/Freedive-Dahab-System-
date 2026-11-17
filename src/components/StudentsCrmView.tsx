@@ -1,28 +1,54 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Student, Inquiry, StudentRegistrationInput, UserRole } from '../types';
-import { Language, translations } from '../i18n';
 import { StudentRegistrationPage } from './StudentRegistrationPage';
-import {
-  Users,
-  Search,
-  Plus,
-  Filter,
-  Calendar as CalendarIcon,
-  MoreHorizontal,
-  Mail,
-  Phone,
-  ShieldCheck,
-  Lock,
-  X,
-  ChevronDown,
-  Check,
-} from 'lucide-react';
+import { Search, Plus, X, ShieldCheck, Lock, MoreHorizontal, Users } from 'lucide-react';
+
+const formatShortDate = (value?: string | null) =>
+  value ? new Date(`${value}T00:00:00`).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : '—';
+
+const formatEuro = (value?: number | null) =>
+  new Intl.NumberFormat('en-IE', { style: 'currency', currency: 'EUR', minimumFractionDigits: 0, maximumFractionDigits: 2 })
+    .format(value ?? 0);
+
+const activitySummary = (student: Student) => {
+  const titles = Array.from(new Set((student.activities ?? []).map((activity) => activity.title)));
+  if (titles.length === 0) return '—';
+  if (titles.length <= 2) return titles.join(', ');
+  return `${titles.slice(0, 2).join(', ')} +${titles.length - 2}`;
+};
+
+interface CustomerStayUpdate {
+  whatsapp: string | null;
+  arrival_date: string | null;
+  departure_date: string | null;
+  needs_accommodation: number;
+  needs_airport_transfer: number;
+}
 
 type MedicalClearanceStatus = 'unknown' | 'cleared' | 'physician_approved';
 
 function isMedicalClearanceStatus(value: string): value is MedicalClearanceStatus {
   return ['unknown', 'cleared', 'physician_approved'].includes(value);
 }
+
+const STATUS_META: Record<
+  Student['status'],
+  { label: string; chip: string }
+> = {
+  lead: { label: 'Lead', chip: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300' },
+  inquiry: { label: 'Inquiry', chip: 'bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300' },
+  active: { label: 'Active', chip: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300' },
+  certified: { label: 'Certified', chip: 'bg-blue-50 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300' },
+  inactive: { label: 'Inactive', chip: 'bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300' },
+};
+
+const STATUS_ORDER: Student['status'][] = ['lead', 'inquiry', 'active', 'certified', 'inactive'];
+
+const CLEARANCE_LABEL: Record<MedicalClearanceStatus, string> = {
+  unknown: 'Unknown / not cleared',
+  cleared: 'Cleared',
+  physician_approved: 'Physician approved',
+};
 
 interface StudentsCrmViewProps {
   students: Student[];
@@ -32,9 +58,10 @@ interface StudentsCrmViewProps {
   onRegisterStudent: (studentData: StudentRegistrationInput) => Promise<void>;
   onUpdateWaiver: (studentId: string, signed: boolean, notes?: string) => Promise<void>;
   onUpdateMedicalClearance: (studentId: string, status: MedicalClearanceStatus) => Promise<void>;
+  onUpdateStay: (studentId: string, details: CustomerStayUpdate) => Promise<void>;
   onCreateInquiry: (inquiryData: any) => Promise<void>;
   onUpdateInquiryStatus: (inquiryId: string, status: string) => Promise<void>;
-  lang: Language;
+  lang: string;
 }
 
 export const StudentsCrmView: React.FC<StudentsCrmViewProps> = ({
@@ -45,27 +72,71 @@ export const StudentsCrmView: React.FC<StudentsCrmViewProps> = ({
   onRegisterStudent,
   onUpdateWaiver,
   onUpdateMedicalClearance,
-  onCreateInquiry,
-  onUpdateInquiryStatus,
-  lang,
+  onUpdateStay,
 }) => {
-  const t = translations[lang];
-
-  // Filters from Reference Picture
-  const [selectedLeadStatus, setSelectedLeadStatus] = useState<string>('All');
-  const [selectedStage, setSelectedStage] = useState<string>('Any stage');
-  const [selectedRows, setSelectedRows] = useState<Record<string, boolean>>({
-    'std-sample-1': true, // Pre-checked sample like in the reference picture
-  });
-  const [currentPage, setCurrentPage] = useState<number>(1);
-  const [rowsPerPage, setRowsPerPage] = useState<number>(10);
+  const [statusFilter, setStatusFilter] = useState<'all' | Student['status']>('all');
+  const [search, setSearch] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
 
   const [isRegistrationPageOpen, setIsRegistrationPageOpen] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
+  const [stayForm, setStayForm] = useState({
+    whatsapp: '',
+    arrival_date: '',
+    departure_date: '',
+    needs_accommodation: false,
+    needs_airport_transfer: false,
+  });
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   const isHealthAuthorized = ['owner', 'operations_manager', 'hr'].includes(userRole);
+  const canEditWaiver = ['owner', 'operations_manager', 'front_desk_crm'].includes(userRole);
+
+  const counts = useMemo(() => {
+    const base: Record<string, number> = { all: students.length };
+    for (const status of STATUS_ORDER) {
+      base[status] = students.filter((student) => student.status === status).length;
+    }
+    return base;
+  }, [students]);
+
+  const openInquiries = useMemo(
+    () => inquiries.filter((inquiry) => !['booked', 'closed_lost'].includes(inquiry.status)).length,
+    [inquiries]
+  );
+
+  const filteredStudents = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    return students.filter((student) => {
+      if (statusFilter !== 'all' && student.status !== statusFilter) return false;
+      if (!term) return true;
+      const haystack = [
+        student.first_name,
+        student.last_name,
+        student.email,
+        student.phone,
+        student.whatsapp,
+        student.certification_agency,
+        student.certification_level,
+        ...(student.activities ?? []).map((activity) => activity.title),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(term);
+    });
+  }, [students, statusFilter, search]);
+
+  const pageCount = Math.max(1, Math.ceil(filteredStudents.length / rowsPerPage));
+  const safePage = Math.min(currentPage, pageCount);
+  const pageStart = (safePage - 1) * rowsPerPage;
+  const pageRows = filteredStudents.slice(pageStart, pageStart + rowsPerPage);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [statusFilter, search, rowsPerPage]);
 
   const handleMedicalClearanceChange = async (status: MedicalClearanceStatus) => {
     if (!selectedStudent) return;
@@ -82,119 +153,69 @@ export const StudentsCrmView: React.FC<StudentsCrmViewProps> = ({
     }
   };
 
-  // Sample contacts mapped for high visual fidelity with the reference picture
-  const sampleContacts = [
-    {
-      id: 'std-sample-0',
-      name: 'Wendy Edwards',
-      company: 'Starbucks',
-      status: 'New',
-      email: 'brad.wheeler@example.com',
-      phone: '(414) 555-0132',
-    },
-    {
-      id: 'std-sample-1',
-      name: 'Brandie Jones',
-      company: 'Gillette',
-      status: 'New',
-      email: 'robert.castro@example.com',
-      phone: '(319) 555-0115',
-    },
-    {
-      id: 'std-sample-2',
-      name: 'Audrey Edwards',
-      company: 'Johnson & Johnson',
-      status: 'New',
-      email: 'lillie.daniels@example.com',
-      phone: '(225) 555-0118',
-    },
-    {
-      id: 'std-sample-3',
-      name: 'Debra Bell',
-      company: 'Apple',
-      status: 'Trial',
-      email: 'sara.cruz@example.com',
-      phone: '—',
-    },
-    {
-      id: 'std-sample-4',
-      name: 'Angel Hawkins',
-      company: "McDonald's",
-      status: 'Trial',
-      email: 'wesley.white@example.com',
-      phone: '(208) 555-0112',
-    },
-    {
-      id: 'std-sample-5',
-      name: 'Leslie Watson',
-      company: 'General Electric',
-      status: 'Cannot contact',
-      email: 'grace.soto@example.com',
-      phone: '(629) 555-0129',
-    },
-    {
-      id: 'std-sample-6',
-      name: 'Cameron Wilson',
-      company: 'Mitsubishi',
-      status: 'Cannot contact',
-      email: '—',
-      phone: '—',
-    },
-    {
-      id: 'std-sample-7',
-      name: 'Ralph Cooper',
-      company: 'Ferrari',
-      status: 'Lost',
-      email: '—',
-      phone: '—',
-    },
-    {
-      id: 'std-sample-8',
-      name: 'Ricardo Flores',
-      company: 'Sony',
-      status: 'Lost',
-      email: '—',
-      phone: '—',
-    },
-    {
-      id: 'std-sample-9',
-      name: 'Shane Henry',
-      company: 'Bank of America',
-      status: 'Lost',
-      email: '—',
-      phone: '—',
-    },
-  ];
+  const handleWaiverToggle = async () => {
+    if (!selectedStudent) return;
+    const nextSigned = !selectedStudent.medical_waiver_signed;
+    setSubmitting(true);
+    setFormError(null);
+    try {
+      await onUpdateWaiver(selectedStudent.id, nextSigned);
+      setSelectedStudent({
+        ...selectedStudent,
+        medical_waiver_signed: nextSigned ? 1 : 0,
+        medical_waiver_date: nextSigned ? new Date().toISOString().slice(0, 10) : undefined,
+      });
+      await onRefresh();
+    } catch (err: any) {
+      setFormError(err.message || 'Failed to update the waiver');
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
-  // Merge real database students with presentation items
-  const combinedContacts = [
-    ...students.map((s) => ({
-      id: s.id,
-      name: `${s.first_name} ${s.last_name}`,
-      company: s.certification_agency || 'Freedive Dahab',
-      status: ['lead', 'inquiry'].includes(s.status)
-        ? 'New'
-        : s.medical_waiver_signed
-          ? 'Trial'
-          : 'Cannot contact',
-      email: s.email,
-      phone: s.phone || '—',
-      studentObj: s,
-    })),
-    ...sampleContacts,
-  ];
+  const openStudentRecord = (student: Student) => {
+    setFormError(null);
+    setSelectedStudent(student);
+    setStayForm({
+      whatsapp: student.whatsapp ?? '',
+      arrival_date: student.arrival_date ?? '',
+      departure_date: student.departure_date ?? '',
+      needs_accommodation: Boolean(student.needs_accommodation),
+      needs_airport_transfer: Boolean(student.needs_airport_transfer),
+    });
+  };
 
-  // Filter contacts by status
-  const displayedContacts = combinedContacts.filter((c) => {
-    if (selectedLeadStatus === 'All') return true;
-    return c.status.toLowerCase() === selectedLeadStatus.toLowerCase();
-  });
-
-  const toggleSelectRow = (id: string) => {
-    setSelectedRows((prev) => ({
-      ...prev,
-      [id]: !prev[id],
-    }));
+  const handleStaySave = async () => {
+    if (!selectedStudent) return;
+    if (stayForm.arrival_date && stayForm.departure_date && stayForm.departure_date < stayForm.arrival_date) {
+      setFormError('Check-out date cannot be before the arrival date.');
+      return;
+    }
+    setSubmitting(true);
+    setFormError(null);
+    try {
+      const whatsapp = stayForm.whatsapp.trim();
+      await onUpdateStay(selectedStudent.id, {
+        whatsapp: whatsapp || null,
+        arrival_date: stayForm.arrival_date || null,
+        departure_date: stayForm.departure_date || null,
+        needs_accommodation: stayForm.needs_accommodation ? 1 : 0,
+        needs_airport_transfer: stayForm.needs_airport_transfer ? 1 : 0,
+      });
+      setSelectedStudent({
+        ...selectedStudent,
+        whatsapp: whatsapp || undefined,
+        arrival_date: stayForm.arrival_date || undefined,
+        departure_date: stayForm.departure_date || undefined,
+        needs_accommodation: stayForm.needs_accommodation ? 1 : 0,
+        needs_airport_transfer: stayForm.needs_airport_transfer ? 1 : 0,
+      });
+      await onRefresh();
+    } catch (err: any) {
+      setFormError(err.message || 'Failed to save the trip details');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   if (isRegistrationPageOpen) {
@@ -210,38 +231,43 @@ export const StudentsCrmView: React.FC<StudentsCrmViewProps> = ({
     );
   }
 
+  const firstRow = filteredStudents.length === 0 ? 0 : pageStart + 1;
+  const lastRow = Math.min(pageStart + rowsPerPage, filteredStudents.length);
+
   return (
     <div className="space-y-6">
-      {/* 2-Column Layout Matching the Top Screen in Reference Picture */}
       <div className="flex flex-col lg:flex-row gap-6 items-start">
-        {/* LEFT COLUMN: Sub-filter panel matching "FILTER" in reference */}
-        <div className="w-full lg:w-64 bg-white dark:bg-[#1E293B] rounded-2xl p-5 border border-[#E8EEF7] dark:border-slate-800 shadow-[0_2px_12px_rgba(40,51,78,0.02)] space-y-6 shrink-0">
-          {/* Filter Header with Funnel Icon */}
-          <div className="flex items-center gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
-            <Filter className="w-4 h-4 text-[#4C8BF5]" />
-            <span className="text-xs font-extrabold uppercase tracking-wider text-slate-800 dark:text-white">
-              FILTER
-            </span>
+        <aside className="w-full lg:w-64 bg-white dark:bg-[#1E293B] rounded-2xl p-5 border border-[#E8EEF7] dark:border-slate-800 shadow-[0_2px_12px_rgba(40,51,78,0.02)] space-y-5 shrink-0">
+          <div>
+            <label htmlFor="customer-search" className="block text-[11px] font-extrabold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">
+              Search
+            </label>
+            <div className="relative">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" aria-hidden="true" />
+              <input
+                id="customer-search"
+                type="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Name, email, phone"
+                className="w-full bg-[#F8FAFC] dark:bg-slate-800 border border-[#E2E8F0] dark:border-slate-700 rounded-xl pl-9 pr-3 py-2 text-xs text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:border-[#4C8BF5]"
+              />
+            </div>
           </div>
 
-          {/* Section 1: LEAD STATUS */}
-          <div className="space-y-2">
-            <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400">
-              LEAD STATUS
+          <div>
+            <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">
+              Student status
             </div>
             <div className="space-y-1 text-xs">
-              {[
-                { label: 'All', count: 148 },
-                { label: 'New', count: 17, isGreen: true },
-                { label: 'Trial', count: 54 },
-                { label: 'Cannot contact', count: 24 },
-                { label: 'Lost', count: 53 },
-              ].map((item) => {
-                const isSelected = selectedLeadStatus === item.label;
+              {[{ key: 'all' as const, label: 'All students' }, ...STATUS_ORDER.map((status) => ({ key: status, label: STATUS_META[status].label }))].map((item) => {
+                const isSelected = statusFilter === item.key;
                 return (
                   <button
-                    key={item.label}
-                    onClick={() => setSelectedLeadStatus(item.label)}
+                    key={item.key}
+                    type="button"
+                    onClick={() => setStatusFilter(item.key)}
+                    aria-pressed={isSelected}
                     className={`w-full text-left rtl:text-right py-1.5 px-2 rounded-lg flex items-center justify-between transition-colors cursor-pointer ${
                       isSelected
                         ? 'font-bold text-[#4C8BF5] bg-blue-50/70 dark:bg-blue-950/40'
@@ -249,67 +275,29 @@ export const StudentsCrmView: React.FC<StudentsCrmViewProps> = ({
                     }`}
                   >
                     <span>{item.label}</span>
-                    <span className="text-[11px] text-slate-400">({item.count})</span>
+                    <span className="text-[11px] text-slate-400">{counts[item.key] ?? 0}</span>
                   </button>
                 );
               })}
             </div>
           </div>
 
-          {/* Section 2: CREATED AT */}
-          <div className="space-y-2">
-            <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400">
-              CREATED AT
-            </div>
-            <button className="w-full flex items-center justify-between px-3 py-2 rounded-xl border border-[#E2E8F0] dark:border-slate-700 bg-[#F8FAFC] dark:bg-slate-800/60 text-xs text-slate-700 dark:text-slate-300 cursor-pointer hover:border-[#4C8BF5] transition-colors">
-              <span>From - To</span>
-              <CalendarIcon className="w-3.5 h-3.5 text-slate-400" />
-            </button>
+          <div className="pt-4 border-t border-slate-100 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400 flex items-start gap-2">
+            <Users className="w-4 h-4 text-[#4C8BF5] mt-0.5 shrink-0" aria-hidden="true" />
+            <span>
+              <strong className="text-slate-800 dark:text-slate-200">{openInquiries}</strong> open {openInquiries === 1 ? 'inquiry' : 'inquiries'} waiting for a first response or follow-up.
+            </span>
           </div>
+        </aside>
 
-          {/* Section 3: IN STAGE */}
-          <div className="space-y-2">
-            <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400">
-              IN STAGE
+        <section className="flex-1 w-full space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 pb-1">
+            <div>
+              <h1 className="text-2xl font-extrabold text-[#28334E] dark:text-white tracking-tight">Customers</h1>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Students, leads and certified divers — {students.length} {students.length === 1 ? 'record' : 'records'} on file.
+              </p>
             </div>
-            <div className="space-y-1 text-xs">
-              {[
-                { label: 'Any stage', count: 148 },
-                { label: 'Need to contact', count: 13 },
-                { label: 'Currently in contact', count: 56 },
-                { label: 'Follow-Up', count: 42 },
-                { label: 'Contract signed', count: 24 },
-                { label: 'Closed', count: 13 },
-              ].map((item) => {
-                const isSelected = selectedStage === item.label;
-                return (
-                  <button
-                    key={item.label}
-                    onClick={() => setSelectedStage(item.label)}
-                    className={`w-full text-left rtl:text-right py-1.5 px-2 rounded-lg flex items-center justify-between transition-colors cursor-pointer ${
-                      isSelected
-                        ? 'font-bold text-[#4C8BF5] bg-blue-50/70 dark:bg-blue-950/40'
-                        : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-50 dark:hover:bg-slate-800'
-                    }`}
-                  >
-                    <span className="truncate">{item.label}</span>
-                    <span className="text-[11px] text-slate-400 shrink-0 ml-1">
-                      ({item.count})
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-
-        {/* RIGHT COLUMN: Table Area matching "Contacts" in reference */}
-        <div className="flex-1 w-full space-y-4">
-          {/* Top Bar with Title "Contacts" & "+ CREATE CONTACT" button */}
-          <div className="flex items-center justify-between pb-1">
-            <h1 className="text-2xl font-extrabold text-[#28334E] dark:text-white tracking-tight">
-              Contacts
-            </h1>
 
             <button
               type="button"
@@ -317,208 +305,287 @@ export const StudentsCrmView: React.FC<StudentsCrmViewProps> = ({
               className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-[#4C8BF5] hover:bg-[#3B7BE8] text-white font-semibold text-xs shadow-md shadow-blue-500/25 cursor-pointer transition-all active:scale-[0.98]"
             >
               <span>REGISTER STUDENT</span>
-              <Plus className="w-4 h-4" />
+              <Plus className="w-4 h-4" aria-hidden="true" />
             </button>
           </div>
 
-          {/* Table Container */}
           <div className="bg-white dark:bg-[#1E293B] rounded-2xl border border-[#E8EEF7] dark:border-slate-800 shadow-[0_2px_12px_rgba(40,51,78,0.02)] overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-left rtl:text-right text-xs">
                 <thead>
                   <tr className="border-b border-[#E8EEF7] dark:border-slate-800 bg-[#F8FAFC] dark:bg-slate-800/50 text-[10px] font-bold text-[#4C8BF5] uppercase tracking-wider">
-                    <th className="py-3 px-4 w-10 text-center">
-                      <input
-                        type="checkbox"
-                        className="rounded border-slate-300 text-[#4C8BF5] focus:ring-[#4C8BF5]"
-                        onChange={(e) => {
-                          const checked = e.target.checked;
-                          const nextRows: Record<string, boolean> = {};
-                          displayedContacts.forEach((c) => {
-                            nextRows[c.id] = checked;
-                          });
-                          setSelectedRows(nextRows);
-                        }}
-                      />
-                    </th>
-                    <th className="py-3.5 px-4 font-bold">NAME</th>
-                    <th className="py-3.5 px-4 font-bold">COMPANY</th>
-                    <th className="py-3.5 px-4 font-bold">LEAD STATUS</th>
-                    <th className="py-3.5 px-4 font-bold">EMAIL</th>
-                    <th className="py-3.5 px-4 font-bold">PHONE NUMBER</th>
-                    <th className="py-3.5 px-4 text-center font-bold">•••</th>
+                    <th scope="col" className="py-3.5 px-4 font-bold">Customer</th>
+                    <th scope="col" className="py-3.5 px-4 font-bold">Description</th>
+                    <th scope="col" className="py-3.5 px-4 font-bold">Start date</th>
+                    <th scope="col" className="py-3.5 px-4 font-bold">Arrival → Check-out</th>
+                    <th scope="col" className="py-3.5 px-4 font-bold">Accommodation</th>
+                    <th scope="col" className="py-3.5 px-4 font-bold">Airport pickup</th>
+                    <th scope="col" className="py-3.5 px-4 font-bold">WhatsApp</th>
+                    <th scope="col" className="py-3.5 px-4 font-bold">Status</th>
+                    <th scope="col" className="py-3.5 px-4 text-right font-bold">Deposit</th>
+                    <th scope="col" className="py-3.5 px-4 text-center font-bold">Comment</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#F1F5F9] dark:divide-slate-800/80">
-                  {displayedContacts.map((contact) => {
-                    const isChecked = !!selectedRows[contact.id];
-
-                    // Status style badge matching the reference picture
-                    const statusClass =
-                      contact.status === 'New'
-                        ? 'text-emerald-500 font-bold'
-                        : contact.status === 'Trial'
-                        ? 'text-[#28334E] dark:text-slate-200 font-semibold'
-                        : contact.status === 'Cannot contact'
-                        ? 'text-[#60A5FA] dark:text-sky-400 font-medium'
-                        : 'text-rose-500 font-bold';
-
-                    return (
-                      <tr
-                        key={contact.id}
-                        className={`hover:bg-[#F8FAFC] dark:hover:bg-slate-800/50 transition-colors ${
-                          isChecked ? 'bg-blue-50/30 dark:bg-blue-950/20' : ''
-                        }`}
-                      >
-                        {/* Checkbox column */}
-                        <td className="py-3.5 px-4 text-center">
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            onChange={() => toggleSelectRow(contact.id)}
-                            className="rounded border-slate-300 text-[#4C8BF5] focus:ring-[#4C8BF5] cursor-pointer"
-                          />
-                        </td>
-
-                        {/* Name column */}
-                        <td className="py-3.5 px-4 font-semibold text-[#28334E] dark:text-white">
-                          <button
-                            onClick={() => {
-                              if ('studentObj' in contact) {
-                                setSelectedStudent((contact as any).studentObj);
-                              }
-                            }}
-                            className="text-left rtl:text-right hover:text-[#4C8BF5] transition-colors cursor-pointer"
-                          >
-                            {contact.name}
-                          </button>
-                        </td>
-
-                        {/* Company / Agency column */}
-                        <td className="py-3.5 px-4 text-slate-600 dark:text-slate-300">
-                          {contact.company}
-                        </td>
-
-                        {/* Lead Status column with colored typography */}
-                        <td className={`py-3.5 px-4 ${statusClass}`}>
-                          {contact.status}
-                        </td>
-
-                        {/* Email column */}
-                        <td className="py-3.5 px-4 text-slate-600 dark:text-slate-300 font-sans">
-                          {contact.email}
-                        </td>
-
-                        {/* Phone Number column */}
-                        <td className="py-3.5 px-4 text-slate-600 dark:text-slate-300 font-sans">
-                          {contact.phone}
-                        </td>
-
-                        {/* Actions column with circular three-dots pill */}
-                        <td className="py-3.5 px-4 text-center">
-                          <button
-                            onClick={() => {
-                              if ('studentObj' in contact) {
-                                setSelectedStudent((contact as any).studentObj);
-                              }
-                            }}
-                            className="w-7 h-7 rounded-full bg-[#EEF4FF] dark:bg-slate-800 text-[#4C8BF5] hover:bg-[#4C8BF5] hover:text-white inline-flex items-center justify-center transition-colors cursor-pointer"
-                          >
-                            <MoreHorizontal className="w-3.5 h-3.5" />
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {pageRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={10} className="py-12 px-4 text-center text-slate-500 dark:text-slate-400">
+                        {students.length === 0
+                          ? 'No students yet. Register the first student to start the customer record.'
+                          : 'No students match this filter. Clear the search or choose another status.'}
+                      </td>
+                    </tr>
+                  ) : (
+                    pageRows.map((student) => {
+                      const meta = STATUS_META[student.status];
+                      return (
+                        <tr key={student.id} className="hover:bg-[#F8FAFC] dark:hover:bg-slate-800/50 transition-colors">
+                          <td className="py-3.5 px-4 font-semibold text-[#28334E] dark:text-white">
+                            <button
+                              type="button"
+                              onClick={() => openStudentRecord(student)}
+                              className="text-left rtl:text-right hover:text-[#4C8BF5] transition-colors cursor-pointer"
+                            >
+                              {student.first_name} {student.last_name}
+                            </button>
+                            <div className="text-[11px] font-normal text-slate-400 truncate max-w-[190px]">{student.email}</div>
+                          </td>
+                          <td className="py-3.5 px-4 text-slate-600 dark:text-slate-300">
+                            <span
+                              className="block max-w-[220px] truncate"
+                              title={(student.activities ?? []).map((activity) => activity.title).join(', ')}
+                            >
+                              {activitySummary(student)}
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-4 text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                            {(() => {
+                              const starts = (student.activities ?? [])
+                                .map((activity) => activity.start_date)
+                                .filter((date): date is string => Boolean(date))
+                                .sort();
+                              return starts.length > 0 ? (
+                                <span className="font-medium text-slate-800 dark:text-slate-200">{formatShortDate(starts[0])}</span>
+                              ) : (
+                                <span className="text-slate-400">Not set</span>
+                              );
+                            })()}
+                          </td>
+                          <td className="py-3.5 px-4 text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                            {student.arrival_date || student.departure_date ? (
+                              <>
+                                <span className="font-medium text-slate-800 dark:text-slate-200">{formatShortDate(student.arrival_date)}</span>
+                                <span className="text-slate-400"> → </span>
+                                <span className="font-medium text-slate-800 dark:text-slate-200">{formatShortDate(student.departure_date)}</span>
+                              </>
+                            ) : (
+                              <span className="text-slate-400">Not set</span>
+                            )}
+                          </td>
+                          <td className="py-3.5 px-4">
+                            <span
+                              className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                                student.needs_accommodation
+                                  ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
+                                  : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+                              }`}
+                            >
+                              {student.needs_accommodation ? 'Yes' : 'No'}
+                            </span>
+                            {student.needs_accommodation && (student.arrival_date || student.departure_date) && (
+                              <div className="mt-1 whitespace-nowrap font-data text-[10px] text-slate-500 dark:text-slate-400">
+                                {formatShortDate(student.arrival_date)} → {formatShortDate(student.departure_date)}
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-3.5 px-4">
+                            <span
+                              className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                                student.needs_airport_transfer
+                                  ? 'bg-sky-50 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300'
+                                  : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+                              }`}
+                            >
+                              {student.needs_airport_transfer ? 'Yes' : 'No'}
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-4 text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                            {student.whatsapp || <span className="text-slate-400">—</span>}
+                          </td>
+                          <td className="py-3.5 px-4">
+                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${meta.chip}`}>
+                              {meta.label}
+                            </span>
+                          </td>
+                          <td className={`py-3.5 px-4 text-right whitespace-nowrap font-data ${student.deposit_paid_eur ? 'font-semibold text-slate-800 dark:text-slate-100' : 'text-slate-400'}`}>
+                            {formatEuro(student.deposit_paid_eur)}
+                          </td>
+                          <td className="py-3.5 px-4 text-center">
+                            <button
+                              type="button"
+                              aria-label={`Open comment for ${student.first_name} ${student.last_name}`}
+                              onClick={() => openStudentRecord(student)}
+                              className="w-7 h-7 rounded-full bg-[#EEF4FF] dark:bg-slate-800 text-[#4C8BF5] hover:bg-[#4C8BF5] hover:text-white inline-flex items-center justify-center transition-colors cursor-pointer"
+                            >
+                              <MoreHorizontal className="w-3.5 h-3.5" aria-hidden="true" />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
               </table>
             </div>
 
-            {/* Bottom Pagination matching Reference Picture */}
-            <div className="flex flex-col sm:flex-row items-center justify-between p-4 border-t border-[#E8EEF7] dark:border-slate-800 text-xs text-slate-500 gap-3">
-              <div className="flex items-center gap-2">
+            <div className="flex flex-col sm:flex-row items-center justify-between p-4 border-t border-[#E8EEF7] dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400 gap-3">
+              <span>
+                Showing {firstRow}–{lastRow} of {filteredStudents.length}
+              </span>
+
+              <div className="flex items-center gap-3">
                 <button
-                  disabled={currentPage === 1}
-                  onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
-                  className="px-2.5 py-1 text-slate-500 hover:text-slate-900 dark:hover:text-white cursor-pointer disabled:opacity-40"
+                  type="button"
+                  disabled={safePage === 1}
+                  onClick={() => setCurrentPage(Math.max(1, safePage - 1))}
+                  className="px-2.5 py-1 rounded-lg hover:text-slate-900 dark:hover:text-white cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   &lt; Prev
                 </button>
-
-                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((p) => (
-                  <button
-                    key={p}
-                    onClick={() => setCurrentPage(p)}
-                    className={`w-6 h-6 rounded flex items-center justify-center text-xs font-semibold cursor-pointer ${
-                      currentPage === p
-                        ? 'bg-[#4C8BF5] text-white shadow-xs'
-                        : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                    }`}
-                  >
-                    {p}
-                  </button>
-                ))}
-
+                <span className="font-semibold text-slate-700 dark:text-slate-200">
+                  Page {safePage} of {pageCount}
+                </span>
                 <button
-                  onClick={() => setCurrentPage(currentPage + 1)}
-                  className="px-2.5 py-1 text-slate-500 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+                  type="button"
+                  disabled={safePage === pageCount}
+                  onClick={() => setCurrentPage(Math.min(pageCount, safePage + 1))}
+                  className="px-2.5 py-1 rounded-lg hover:text-slate-900 dark:hover:text-white cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   Next &gt;
                 </button>
-              </div>
 
-              {/* Rows per page dropdown */}
-              <div className="flex items-center gap-2 text-xs">
-                <select
-                  value={rowsPerPage}
-                  onChange={(e) => setRowsPerPage(Number(e.target.value))}
-                  className="bg-[#F8FAFC] dark:bg-slate-800 border border-[#E2E8F0] dark:border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-700 dark:text-slate-200 cursor-pointer focus:outline-none focus:border-[#4C8BF5]"
-                >
-                  <option value={10}>10</option>
-                  <option value={25}>25</option>
-                  <option value={50}>50</option>
-                </select>
-                <span>per page</span>
+                <label className="flex items-center gap-2">
+                  <span className="sr-only">Rows per page</span>
+                  <select
+                    value={rowsPerPage}
+                    onChange={(event) => setRowsPerPage(Number(event.target.value))}
+                    className="bg-[#F8FAFC] dark:bg-slate-800 border border-[#E2E8F0] dark:border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-700 dark:text-slate-200 cursor-pointer focus:outline-none focus:border-[#4C8BF5]"
+                  >
+                    <option value={10}>10</option>
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                  </select>
+                  per page
+                </label>
               </div>
             </div>
           </div>
-        </div>
+        </section>
       </div>
 
-      {/* STUDENT DETAIL DOSSIER MODAL */}
       {selectedStudent && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white dark:bg-[#1E293B] rounded-2xl max-w-xl w-full p-6 space-y-4 shadow-2xl border border-slate-200 dark:border-slate-700 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
               <div>
-                <h3 className="text-lg font-bold text-slate-900 dark:text-white">
+                <h2 className="text-lg font-bold text-slate-900 dark:text-white">
                   {selectedStudent.first_name} {selectedStudent.last_name}
-                </h3>
+                </h2>
                 <p className="text-xs text-slate-400">
-                  {selectedStudent.certification_agency} {selectedStudent.certification_level} • ID: {selectedStudent.id}
+                  {selectedStudent.certification_agency && selectedStudent.certification_agency !== 'None'
+                    ? `${selectedStudent.certification_agency} ${selectedStudent.certification_level || ''}`
+                    : 'Not certified yet'}{' '}
+                  • ID: {selectedStudent.id}
                 </p>
               </div>
               <button
+                type="button"
+                aria-label="Close student record"
                 onClick={() => setSelectedStudent(null)}
                 className="text-slate-400 hover:text-slate-600 dark:hover:text-white p-1 rounded-lg cursor-pointer"
               >
-                <X className="w-5 h-5" />
+                <X className="w-5 h-5" aria-hidden="true" />
               </button>
             </div>
 
             <div className="space-y-4 text-xs">
               <div className="grid grid-cols-2 gap-3">
                 <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
-                  <span className="text-slate-400 text-[10px] uppercase font-bold">Personal Best Depth</span>
+                  <span className="text-slate-400 text-[10px] uppercase font-bold">Personal best depth</span>
                   <div className="text-lg font-bold text-[#4C8BF5] mt-1 font-mono">
-                    {selectedStudent.total_depth_pb ? `${selectedStudent.total_depth_pb}m` : 'N/A'}
+                    {selectedStudent.total_depth_pb ? `${selectedStudent.total_depth_pb}m` : '—'}
                   </div>
                 </div>
                 <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
-                  <span className="text-slate-400 text-[10px] uppercase font-bold">Signed Waiver</span>
-                  <div className="text-sm font-semibold text-emerald-600 dark:text-emerald-400 mt-1">
-                    {selectedStudent.medical_waiver_signed ? 'Signed' : 'Signature Pending'}
+                  <span className="text-slate-400 text-[10px] uppercase font-bold">Static apnea</span>
+                  <div className="text-lg font-bold text-[#4C8BF5] mt-1 font-mono">
+                    {selectedStudent.static_apnea_pb || '—'}
                   </div>
+                </div>
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 space-y-3">
+                <div>
+                  <div className="font-semibold text-slate-900 dark:text-white">Trip &amp; stay</div>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Arrival and check-out keep transfers, rooms and the activity plan in sync.
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="col-span-2">
+                    <label htmlFor="record-whatsapp" className="block text-slate-500 dark:text-slate-400 text-[10px] uppercase font-bold mb-1">WhatsApp</label>
+                    <input id="record-whatsapp" type="tel" inputMode="tel" maxLength={60} value={stayForm.whatsapp} onChange={(event) => setStayForm({ ...stayForm, whatsapp: event.target.value })} className="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 p-2 text-slate-900 dark:text-white" />
+                  </div>
+                  <div>
+                    <label htmlFor="record-arrival" className="block text-slate-500 dark:text-slate-400 text-[10px] uppercase font-bold mb-1">Arrival</label>
+                    <input id="record-arrival" type="date" value={stayForm.arrival_date} onChange={(event) => setStayForm({ ...stayForm, arrival_date: event.target.value })} className="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 p-2 text-slate-900 dark:text-white" />
+                  </div>
+                  <div>
+                    <label htmlFor="record-departure" className="block text-slate-500 dark:text-slate-400 text-[10px] uppercase font-bold mb-1">Check-out</label>
+                    <input id="record-departure" type="date" min={stayForm.arrival_date || undefined} value={stayForm.departure_date} onChange={(event) => setStayForm({ ...stayForm, departure_date: event.target.value })} className="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 p-2 text-slate-900 dark:text-white" />
+                  </div>
+                  <label className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
+                    <input type="checkbox" checked={stayForm.needs_accommodation} onChange={(event) => setStayForm({ ...stayForm, needs_accommodation: event.target.checked })} className="h-4 w-4 rounded border-slate-300 text-[#4C8BF5]" />
+                    Accommodation needed
+                  </label>
+                  <label className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
+                    <input type="checkbox" checked={stayForm.needs_airport_transfer} onChange={(event) => setStayForm({ ...stayForm, needs_airport_transfer: event.target.checked })} className="h-4 w-4 rounded border-slate-300 text-[#4C8BF5]" />
+                    Airport pickup
+                  </label>
+                </div>
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    disabled={submitting}
+                    onClick={handleStaySave}
+                    className="inline-flex items-center rounded-lg bg-[#4C8BF5] px-3 py-2 text-[11px] font-semibold text-white hover:bg-[#3B7BE8] disabled:opacity-50 cursor-pointer"
+                  >
+                    Save trip details
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-start gap-3">
+                <ShieldCheck className={`w-4 h-4 mt-0.5 ${selectedStudent.medical_waiver_signed ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`} aria-hidden="true" />
+                <div className="flex-1">
+                  <div className="font-semibold text-slate-800 dark:text-slate-200">
+                    Medical waiver {selectedStudent.medical_waiver_signed ? 'signed' : 'pending'}
+                  </div>
+                  <div className="text-slate-500 dark:text-slate-400">
+                    {selectedStudent.medical_waiver_signed
+                      ? `On file${selectedStudent.medical_waiver_date ? ` since ${selectedStudent.medical_waiver_date}` : ''}.`
+                      : 'Do not take this student in the water until the waiver is signed.'}
+                  </div>
+                  {canEditWaiver && (
+                    <button
+                      type="button"
+                      disabled={submitting}
+                      onClick={handleWaiverToggle}
+                      className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 px-2.5 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-200 hover:border-[#4C8BF5] hover:text-[#4C8BF5] disabled:opacity-50 cursor-pointer"
+                    >
+                      {selectedStudent.medical_waiver_signed ? 'Revoke waiver' : 'Mark waiver signed'}
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -538,30 +605,67 @@ export const StudentsCrmView: React.FC<StudentsCrmViewProps> = ({
                     }}
                     className="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 p-2 text-slate-900 dark:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500"
                   >
-                    <option value="unknown">Unknown / not cleared</option>
-                    <option value="cleared">Cleared</option>
-                    <option value="physician_approved">Physician approved</option>
+                    <option value="unknown">{CLEARANCE_LABEL.unknown}</option>
+                    <option value="cleared">{CLEARANCE_LABEL.cleared}</option>
+                    <option value="physician_approved">{CLEARANCE_LABEL.physician_approved}</option>
                   </select>
                 ) : (
-                  <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">
-                    {selectedStudent.medical_clearance_status || 'Restricted / not available'}
+                  <div className="text-sm font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-2">
+                    <Lock className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
+                    {selectedStudent.medical_clearance_status
+                      ? CLEARANCE_LABEL[selectedStudent.medical_clearance_status]
+                      : 'Restricted / not available'}
                   </div>
                 )}
               </div>
-              {formError && <p role="alert" className="text-sm text-rose-600">{formError}</p>}
+              {formError && <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">{formError}</p>}
 
               <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 space-y-2">
-                <div className="font-semibold text-slate-900 dark:text-white">Contact Info</div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="font-semibold text-slate-900 dark:text-white">Activities &amp; payments</div>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Paid to date: <strong className="font-data text-slate-900 dark:text-white">{formatEuro(selectedStudent.paid_total_eur)}</strong>
+                  </div>
+                </div>
+                {(selectedStudent.activities ?? []).length === 0 ? (
+                  <div className="text-slate-500 dark:text-slate-400">No activity booked yet.</div>
+                ) : (
+                  <ul className="space-y-2">
+                    {(selectedStudent.activities ?? []).map((activity, index) => (
+                      <li key={`${activity.title}-${index}`} className="flex items-start justify-between gap-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 px-3 py-2">
+                        <div>
+                          <div className="font-semibold text-slate-800 dark:text-slate-100">{activity.title}</div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                            {activity.start_date || activity.end_date
+                              ? `${formatShortDate(activity.start_date)} → ${formatShortDate(activity.end_date)}`
+                              : 'Dates not scheduled'}
+                          </div>
+                        </div>
+                        <span className="shrink-0 rounded-full bg-[#EEF4FF] dark:bg-slate-800 px-2 py-0.5 text-[10px] font-semibold uppercase text-[#4C8BF5]">
+                          {activity.status.replace('_', ' ')}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 space-y-2">
+                <div className="font-semibold text-slate-900 dark:text-white">Contact &amp; safety</div>
                 <div className="text-slate-600 dark:text-slate-300 space-y-1">
                   <div>Email: <strong>{selectedStudent.email}</strong></div>
                   <div>Phone: <strong>{selectedStudent.phone || '—'}</strong></div>
-                  <div>Emergency Contact: <strong>{selectedStudent.emergency_contact_name || 'None'}</strong></div>
+                  <div>WhatsApp: <strong>{selectedStudent.whatsapp || '—'}</strong></div>
+                  <div>Emergency contact: <strong>{selectedStudent.emergency_contact_name || 'None'}</strong></div>
+                  <div>Emergency phone: <strong>{selectedStudent.emergency_contact_phone || '—'}</strong></div>
+                  <div>Insurance: <strong>{selectedStudent.insurance_details || '—'}</strong></div>
                 </div>
               </div>
             </div>
 
             <div className="flex justify-end pt-2">
               <button
+                type="button"
                 onClick={() => setSelectedStudent(null)}
                 className="px-4 py-2 rounded-xl bg-[#4C8BF5] text-white font-medium text-xs cursor-pointer"
               >

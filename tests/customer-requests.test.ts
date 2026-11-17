@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
+import { removeTemporaryDirectory } from './test-cleanup.js';
 
 const originalDirectory = process.cwd();
 const temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'freedive-request-test-'));
@@ -53,15 +54,7 @@ after(async () => {
   }
   db.close();
   process.chdir(originalDirectory);
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      rmSync(temporaryDirectory, { recursive: true, force: true });
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EPERM' || attempt >= 4) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
-    }
-  }
+  await removeTemporaryDirectory(temporaryDirectory);
 });
 
 async function request(

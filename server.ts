@@ -17,6 +17,10 @@ async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
   const isProduction = process.env.NODE_ENV === 'production';
 
+  if (isProduction && process.env.ALLOW_DEMO_LOGIN === 'true') {
+    console.warn('SECURITY WARNING: ALLOW_DEMO_LOGIN is enabled in production. Anyone can sign in as the owner.');
+  }
+
   // Initialize SQLite database and seed initial operational records
   initializeDatabase();
   seedInitialData();

@@ -13,6 +13,11 @@ interface RegistrationFormState {
   last_name: string;
   email: string;
   phone: string;
+  whatsapp: string;
+  arrival_date: string;
+  departure_date: string;
+  needs_accommodation: boolean;
+  needs_airport_transfer: boolean;
   nationality: string;
   date_of_birth: string;
   certification_agency: string;
@@ -36,6 +41,11 @@ const initialForm = (): RegistrationFormState => ({
   last_name: '',
   email: '',
   phone: '',
+  whatsapp: '',
+  arrival_date: '',
+  departure_date: '',
+  needs_accommodation: false,
+  needs_airport_transfer: false,
   nationality: '',
   date_of_birth: '',
   certification_agency: '',
@@ -79,6 +89,11 @@ export const StudentRegistrationPage: React.FC<StudentRegistrationPageProps> = (
         last_name: form.last_name.trim(),
         email: form.email.trim(),
         phone: form.phone.trim() || undefined,
+        whatsapp: form.whatsapp.trim() || undefined,
+        arrival_date: form.arrival_date || undefined,
+        departure_date: form.departure_date || undefined,
+        needs_accommodation: form.needs_accommodation ? 1 : 0,
+        needs_airport_transfer: form.needs_airport_transfer ? 1 : 0,
         nationality: form.nationality.trim() || undefined,
         date_of_birth: form.date_of_birth || undefined,
         certification_agency: form.certification_agency.trim() || 'None',
@@ -151,7 +166,7 @@ export const StudentRegistrationPage: React.FC<StudentRegistrationPageProps> = (
               <input id="registration-email" type="email" autoComplete="email" required maxLength={254} value={form.email} onChange={(event) => update('email', event.target.value)} className={inputClass} />
             </div>
             <div>
-              <label htmlFor="registration-phone" className={labelClass}>Phone / WhatsApp</label>
+              <label htmlFor="registration-phone" className={labelClass}>Phone number</label>
               <input id="registration-phone" type="tel" autoComplete="tel" maxLength={60} value={form.phone} onChange={(event) => update('phone', event.target.value)} className={inputClass} />
             </div>
             <div>
@@ -171,6 +186,35 @@ export const StudentRegistrationPage: React.FC<StudentRegistrationPageProps> = (
           </div>
         </section>
 
+        <section aria-labelledby="registration-stay-heading" className="space-y-4 rounded-2xl border border-[#E8EEF7] bg-white p-4 dark:border-slate-800 dark:bg-[#1E293B] sm:p-6">
+          <div>
+            <h2 id="registration-stay-heading" className="text-lg font-bold text-[#28334E] dark:text-white">Trip &amp; stay</h2>
+            <p className="mt-1 text-xs leading-5 text-slate-600 dark:text-slate-400">Arrival and check-out drive airport transfers, room allocation and the activity plan. Check-out cannot be before arrival.</p>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div>
+              <label htmlFor="registration-whatsapp" className={labelClass}>WhatsApp number</label>
+              <input id="registration-whatsapp" type="tel" inputMode="tel" autoComplete="tel" maxLength={60} placeholder="+20 100 000 0000" value={form.whatsapp} onChange={(event) => update('whatsapp', event.target.value)} className={inputClass} />
+            </div>
+            <div>
+              <label htmlFor="registration-arrival" className={labelClass}>Arrival date</label>
+              <input id="registration-arrival" type="date" value={form.arrival_date} onChange={(event) => update('arrival_date', event.target.value)} className={inputClass} />
+            </div>
+            <div>
+              <label htmlFor="registration-departure" className={labelClass}>Check-out date</label>
+              <input id="registration-departure" type="date" min={form.arrival_date || undefined} value={form.departure_date} onChange={(event) => update('departure_date', event.target.value)} className={inputClass} />
+            </div>
+            <label className="flex min-h-11 items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+              <input type="checkbox" checked={form.needs_accommodation} onChange={(event) => update('needs_accommodation', event.target.checked)} className="h-4 w-4 rounded border-slate-300 text-[#4C8BF5] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#4C8BF5]" />
+              Needs accommodation
+            </label>
+            <label className="flex min-h-11 items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+              <input type="checkbox" checked={form.needs_airport_transfer} onChange={(event) => update('needs_airport_transfer', event.target.checked)} className="h-4 w-4 rounded border-slate-300 text-[#4C8BF5] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#4C8BF5]" />
+              Airport pickup
+            </label>
+          </div>
+        </section>
+
         <section aria-labelledby="registration-diving-heading" className="space-y-4 rounded-2xl border border-[#E8EEF7] bg-white p-4 dark:border-slate-800 dark:bg-[#1E293B] sm:p-6">
           <div>
             <h2 id="registration-diving-heading" className="text-lg font-bold text-[#28334E] dark:text-white">Freediving profile</h2>
@@ -179,11 +223,11 @@ export const StudentRegistrationPage: React.FC<StudentRegistrationPageProps> = (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <div>
               <label htmlFor="registration-agency" className={labelClass}>Certification agency</label>
-              <input id="registration-agency" maxLength={100} placeholder="AIDA, Molchanovs, SSI…" value={form.certification_agency} onChange={(event) => update('certification_agency', event.target.value)} className={inputClass} />
+              <input id="registration-agency" maxLength={100} placeholder="SSI, or a prior agency" value={form.certification_agency} onChange={(event) => update('certification_agency', event.target.value)} className={inputClass} />
             </div>
             <div>
               <label htmlFor="registration-level" className={labelClass}>Certification level</label>
-              <input id="registration-level" maxLength={100} placeholder="Beginner, Wave 2, Level 3…" value={form.certification_level} onChange={(event) => update('certification_level', event.target.value)} className={inputClass} />
+              <input id="registration-level" maxLength={100} placeholder="Beginner, Level 1, Level 2…" value={form.certification_level} onChange={(event) => update('certification_level', event.target.value)} className={inputClass} />
             </div>
             <div>
               <label htmlFor="registration-depth" className={labelClass}>Personal best depth (metres)</label>

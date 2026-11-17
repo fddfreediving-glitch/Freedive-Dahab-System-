@@ -43,6 +43,10 @@ export async function apiRequest<T = any>(endpoint: string, options: RequestInit
     data = await response.text();
   }
 
+  if (endpoint.startsWith('/api') && !(contentType && contentType.includes('application/json'))) {
+    throw new Error('The operations server is not reachable from this site. Sign-in and live data are unavailable.');
+  }
+
   if (!response.ok) {
     const errorMsg = data && typeof data === 'object' && data.error ? data.error : `Request failed with status ${response.status}`;
     throw new Error(errorMsg);

@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
+import { removeTemporaryDirectory } from './test-cleanup.js';
 
 const originalDirectory = process.cwd();
 const temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'freedive-pos-catalog-test-'));
@@ -53,17 +54,7 @@ after(async () => {
   db.pragma('wal_checkpoint(TRUNCATE)');
   db.close();
   process.chdir(originalDirectory);
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      rmSync(temporaryDirectory, { recursive: true, force: true });
-      break;
-    } catch (error) {
-      if (attempt >= 4 || !(error instanceof Error && 'code' in error && ['EPERM', 'EACCES', 'EBUSY'].includes(String(error.code)))) {
-        throw error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
-    }
-  }
+  await removeTemporaryDirectory(temporaryDirectory);
 });
 
 async function request(

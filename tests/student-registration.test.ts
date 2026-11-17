@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
+import { removeTemporaryDirectory } from './test-cleanup.js';
 
 const originalDirectory = process.cwd();
 const temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'freedive-student-registration-test-'));
@@ -49,17 +50,7 @@ after(async () => {
   db.pragma('wal_checkpoint(TRUNCATE)');
   db.close();
   process.chdir(originalDirectory);
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      rmSync(temporaryDirectory, { recursive: true, force: true });
-      break;
-    } catch (error) {
-      if (attempt >= 4 || !(error instanceof Error && 'code' in error && ['EPERM', 'EACCES', 'EBUSY'].includes(String(error.code)))) {
-        throw error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
-    }
-  }
+  await removeTemporaryDirectory(temporaryDirectory);
 });
 
 async function request(
@@ -85,9 +76,14 @@ test('student registration preserves lead status and the full contact and freedi
     last_name: 'Example',
     email: 'nadia.registration@example.test',
     phone: '+20 100 000 0000',
+    whatsapp: '+20 111 222 3333',
+    arrival_date: '2026-12-01',
+    departure_date: '2026-12-08',
+    needs_accommodation: 1,
+    needs_airport_transfer: 1,
     nationality: 'Egyptian',
     date_of_birth: '1995-06-12',
-    certification_agency: 'AIDA',
+    certification_agency: 'SSI',
     certification_level: 'Wave 2',
     total_depth_pb: 32.5,
     static_apnea_pb: '04:15',
@@ -117,6 +113,79 @@ test('student registration preserves lead status and the full contact and freedi
   assert.equal(saved.insurance_details, payload.insurance_details);
   assert.equal(saved.source_channel, payload.source_channel);
   assert.equal(saved.notes, payload.notes);
+  assert.equal(saved.whatsapp, payload.whatsapp);
+  assert.equal(saved.arrival_date, payload.arrival_date);
+  assert.equal(saved.departure_date, payload.departure_date);
+  assert.equal(saved.needs_accommodation, 1);
+  assert.equal(saved.needs_airport_transfer, 1);
+});
+
+test('trip and stay details can be updated and reject a check-out before arrival', async () => {
+  const created = await request('/students', 'POST', {
+    first_name: 'Stay',
+    last_name: 'Guest',
+    email: 'stay.guest@example.test',
+    arrival_date: '2027-01-10',
+    departure_date: '2027-01-15',
+  });
+  assert.equal(created.status, 201);
+
+  const invalid = await request('/students', 'POST', {
+    first_name: 'Bad',
+    last_name: 'Dates',
+    email: 'bad.dates@example.test',
+    arrival_date: '2027-02-10',
+    departure_date: '2027-02-01',
+  });
+  assert.equal(invalid.status, 400);
+  assert.equal(db.prepare('SELECT id FROM students WHERE email = ?').get('bad.dates@example.test'), undefined);
+
+  const patched = await fetch(`${baseUrl}/students/${created.data.id}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${ownerToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      whatsapp: '+20 122 333 4444',
+      arrival_date: '2027-01-12',
+      departure_date: '2027-01-14',
+      needs_accommodation: 0,
+      needs_airport_transfer: 1,
+    }),
+  });
+  assert.equal(patched.status, 200);
+
+  const saved = db.prepare('SELECT * FROM students WHERE id = ?').get(created.data.id) as Record<string, unknown>;
+  assert.equal(saved.whatsapp, '+20 122 333 4444');
+  assert.equal(saved.arrival_date, '2027-01-12');
+  assert.equal(saved.departure_date, '2027-01-14');
+  assert.equal(saved.needs_accommodation, 0);
+  assert.equal(saved.needs_airport_transfer, 1);
+
+  const reversed = await fetch(`${baseUrl}/students/${created.data.id}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${ownerToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ departure_date: '2027-01-01' }),
+  });
+  assert.equal(reversed.status, 400);
+});
+
+test('customer list carries booked activities and the euro total paid', async () => {
+  const response = await request('/students');
+  assert.equal(response.status, 200);
+  assert.ok(Array.isArray(response.data));
+
+  const chloe = response.data.find((student: any) => student.email === 'chloe.martin.paris@wanadoo.fr');
+  assert.ok(chloe, 'seeded customer should be listed');
+  assert.equal(chloe.paid_total_eur, 310);
+  assert.ok(Array.isArray(chloe.activities));
+  assert.ok(chloe.activities.length >= 1);
+  assert.equal(chloe.activities[0].title, 'SSI Freediver');
+  assert.ok(chloe.arrival_date);
+  assert.ok(chloe.departure_date);
+  assert.equal(chloe.whatsapp, '+33 6 12 34 56 78');
+
+  const luca = response.data.find((student: any) => student.email === 'luca.rossi.apnea@libero.it');
+  assert.ok(luca);
+  assert.equal(luca.paid_total_eur, 0);
 });
 
 test('front desk registration cannot set restricted medical clearance or notes', async () => {

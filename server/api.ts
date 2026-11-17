@@ -14,6 +14,11 @@ import {
 
 export const apiRouter = Router();
 
+// Passwordless role switching exists for local training only. It must be
+// explicitly enabled and must never be reachable on a deployed system.
+// Read lazily: this module is imported before dotenv loads .env.
+const demoLoginEnabled = () => process.env.ALLOW_DEMO_LOGIN === 'true';
+
 const posCatalogColumns = `
   id, group_name AS "group", name, category, price, price_currency, unit, description,
   tier_minimum_quantity, tier_unit_price, stay_discount, is_active, created_at, updated_at
@@ -199,6 +204,11 @@ apiRouter.get('/auth/me', requireAuth, (req: Request, res: Response): void => {
 
 // Role switcher helper for demonstration & evaluation of permissions
 apiRouter.post('/auth/switch-demo', (req: Request, res: Response): void => {
+  if (!demoLoginEnabled()) {
+    res.status(404).json({ error: 'Not found' });
+    return;
+  }
+
   const { role, email } = req.body;
   let targetUser: any;
 
@@ -450,8 +460,67 @@ apiRouter.get('/students', requireAuth, (req: Request, res: Response): void => {
 
   const rows = db.prepare(query).all(...params) as any[];
 
+  const activitiesByStudent = new Map<string, Array<Record<string, unknown>>>();
+  const activityRows = db.prepare(`
+    SELECT b.student_id, c.title, b.status, s.start_date, s.end_date
+    FROM bookings b
+    JOIN courses c ON c.id = b.course_id
+    LEFT JOIN course_sessions s ON s.id = b.session_id
+    WHERE b.status != 'cancelled'
+    ORDER BY COALESCE(s.start_date, b.booking_date) DESC
+  `).all() as Array<any>;
+  for (const activity of activityRows) {
+    const list = activitiesByStudent.get(activity.student_id) ?? [];
+    list.push({
+      title: activity.title,
+      status: activity.status,
+      start_date: activity.start_date ?? null,
+      end_date: activity.end_date ?? null,
+    });
+    activitiesByStudent.set(activity.student_id, list);
+  }
+
+  const paidByStudent = new Map<string, number>();
+  const paidRows = db.prepare(`
+    SELECT i.student_id,
+           COALESCE(SUM(p.eur_amount_cents), 0) AS eur_cents,
+           COALESCE(SUM(CASE WHEN p.eur_amount_cents IS NULL AND p.currency = 'EUR'
+                             THEN ROUND(p.amount * 100) ELSE 0 END), 0) AS legacy_eur_cents
+    FROM payments p
+    JOIN invoices i ON i.id = p.invoice_id
+    WHERE i.status != 'cancelled'
+    GROUP BY i.student_id
+  `).all() as Array<{ student_id: string; eur_cents: number; legacy_eur_cents: number }>;
+  for (const row of paidRows) {
+    paidByStudent.set(row.student_id, Math.round(row.eur_cents + row.legacy_eur_cents) / 100);
+  }
+
+  // The deposit is the first payment recorded on each bill.
+  const depositByStudent = new Map<string, number>();
+  const depositRows = db.prepare(`
+    SELECT i.student_id,
+           COALESCE(SUM(COALESCE(firsts.eur_amount_cents,
+             CASE WHEN firsts.currency = 'EUR' THEN ROUND(firsts.amount * 100) ELSE 0 END)), 0) AS eur_cents
+    FROM (
+      SELECT p.invoice_id, p.currency, p.amount, p.eur_amount_cents,
+             ROW_NUMBER() OVER (PARTITION BY p.invoice_id ORDER BY p.payment_date ASC, p.created_at ASC) AS rn
+      FROM payments p
+    ) firsts
+    JOIN invoices i ON i.id = firsts.invoice_id
+    WHERE firsts.rn = 1 AND i.status != 'cancelled'
+    GROUP BY i.student_id
+  `).all() as Array<{ student_id: string; eur_cents: number }>;
+  for (const row of depositRows) {
+    depositByStudent.set(row.student_id, Math.round(row.eur_cents) / 100);
+  }
+
   // Apply server-side medical data restriction for non-authorized roles
-  const masked = rows.map((s) => maskStudentData(s, req.user!.role));
+  const masked = rows.map((student) => maskStudentData({
+    ...student,
+    activities: activitiesByStudent.get(student.id) ?? [],
+    paid_total_eur: paidByStudent.get(student.id) ?? 0,
+    deposit_paid_eur: depositByStudent.get(student.id) ?? 0,
+  }, req.user!.role));
   res.json(masked);
 });
 
@@ -499,6 +568,11 @@ apiRouter.post('/students', requireAuth, (req: Request, res: Response): void => 
     last_name,
     email,
     phone,
+    whatsapp,
+    arrival_date,
+    departure_date,
+    needs_accommodation,
+    needs_airport_transfer,
     nationality,
     date_of_birth,
     certification_agency,
@@ -549,6 +623,11 @@ apiRouter.post('/students', requireAuth, (req: Request, res: Response): void => 
     res.status(400).json({ error: 'Date of birth must be a valid date that is not in the future' });
     return;
   }
+  const stayError = validateStayDetails({ whatsapp, arrival_date, departure_date, needs_accommodation, needs_airport_transfer });
+  if (stayError) {
+    res.status(400).json({ error: stayError });
+    return;
+  }
   if (medical_clearance_status !== undefined && !['owner', 'operations_manager', 'hr'].includes(req.user!.role)) {
     res.status(403).json({ error: 'Only authorized health roles may record medical clearance' });
     return;
@@ -570,18 +649,24 @@ apiRouter.post('/students', requireAuth, (req: Request, res: Response): void => 
 
   db.prepare(`
     INSERT INTO students (
-      id, first_name, last_name, email, phone, nationality, date_of_birth,
+      id, first_name, last_name, email, phone, whatsapp, arrival_date, departure_date,
+      needs_accommodation, needs_airport_transfer, nationality, date_of_birth,
       certification_agency, certification_level, total_depth_pb, static_apnea_pb,
       medical_waiver_signed, medical_waiver_date, medical_clearance_status, medical_notes,
       emergency_contact_name, emergency_contact_phone, insurance_details,
       source_channel, status, notes, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     first_name.trim(),
     last_name.trim(),
     email.toLowerCase().trim(),
     phone || null,
+    typeof whatsapp === 'string' && whatsapp.trim() ? whatsapp.trim() : null,
+    arrival_date || null,
+    departure_date || null,
+    stayFlag(needs_accommodation) ?? 0,
+    stayFlag(needs_airport_transfer) ?? 0,
     nationality || null,
     date_of_birth || null,
     certification_agency || 'None',
@@ -654,8 +739,23 @@ apiRouter.patch('/students/:id', requireAuth, (req: Request, res: Response): voi
     }
   }
 
+  const nextArrival = req.body.arrival_date !== undefined ? req.body.arrival_date : existing.arrival_date;
+  const nextDeparture = req.body.departure_date !== undefined ? req.body.departure_date : existing.departure_date;
+  const stayError = validateStayDetails({
+    whatsapp: req.body.whatsapp,
+    arrival_date: nextArrival,
+    departure_date: nextDeparture,
+    needs_accommodation: req.body.needs_accommodation,
+    needs_airport_transfer: req.body.needs_airport_transfer,
+  });
+  if (stayError) {
+    res.status(400).json({ error: stayError });
+    return;
+  }
+
   const allowedFields = [
-    'first_name', 'last_name', 'phone', 'nationality', 'date_of_birth',
+    'first_name', 'last_name', 'phone', 'whatsapp', 'arrival_date', 'departure_date',
+    'needs_accommodation', 'needs_airport_transfer', 'nationality', 'date_of_birth',
     'certification_agency', 'certification_level', 'total_depth_pb',
     'static_apnea_pb', 'medical_waiver_signed', 'medical_waiver_date',
     'medical_clearance_status', 'medical_notes', 'emergency_contact_name', 'emergency_contact_phone',
@@ -686,6 +786,8 @@ apiRouter.patch('/students/:id', requireAuth, (req: Request, res: Response): voi
       updates.push(`${field} = ?`);
       let val = req.body[field];
       if (field === 'medical_waiver_signed') val = val === true || val === 1 ? 1 : 0;
+      if (field === 'needs_accommodation' || field === 'needs_airport_transfer') val = stayFlag(val) ?? 0;
+      if (field === 'arrival_date' || field === 'departure_date' || field === 'whatsapp') val = val || null;
       values.push(val);
     }
   }
@@ -1341,8 +1443,8 @@ apiRouter.post('/bookings', requireAuth, requireRole(['owner', 'operations_manag
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?)
   `);
   const itemInsert = db.prepare(`
-    INSERT INTO invoice_items (id, invoice_id, description, quantity, unit_price, total_price)
-    VALUES (?, ?, ?, 1, ?, ?)
+    INSERT INTO invoice_items (id, invoice_id, category, description, quantity, unit_price, total_price)
+    VALUES (?, ?, 'course', ?, 1, ?, ?)
   `);
   const paymentInsert = db.prepare(`
     INSERT INTO payments (id, invoice_id, amount, currency, payment_method, payment_date, recorded_by, created_at)
@@ -1829,6 +1931,44 @@ function isValidDate(value: unknown): value is string {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const parsed = new Date(`${value}T00:00:00.000Z`);
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+type StayDetails = {
+  whatsapp?: unknown;
+  arrival_date?: unknown;
+  departure_date?: unknown;
+  needs_accommodation?: unknown;
+  needs_airport_transfer?: unknown;
+};
+
+function validateStayDetails(details: StayDetails): string | null {
+  const { whatsapp, arrival_date, departure_date, needs_accommodation, needs_airport_transfer } = details;
+  if (whatsapp !== undefined && whatsapp !== null && typeof whatsapp !== 'string') {
+    return 'WhatsApp number must be text';
+  }
+  if (typeof whatsapp === 'string' && whatsapp.trim().length > 60) {
+    return 'WhatsApp number must be 60 characters or fewer';
+  }
+  for (const [label, value] of [['Arrival date', arrival_date], ['Check-out date', departure_date]] as const) {
+    if (value !== undefined && value !== null && value !== '' && !isValidDate(value)) {
+      return `${label} must be a valid calendar date`;
+    }
+  }
+  for (const [label, value] of [['Accommodation', needs_accommodation], ['Airport transfer', needs_airport_transfer]] as const) {
+    if (value !== undefined && typeof value !== 'boolean' && value !== 0 && value !== 1) {
+      return `${label} must be yes or no`;
+    }
+  }
+  if (isValidDate(arrival_date) && isValidDate(departure_date) && departure_date < arrival_date) {
+    return 'Check-out date cannot be before the arrival date';
+  }
+  return null;
+}
+
+function stayFlag(value: unknown): number | null {
+  if (value === true || value === 1) return 1;
+  if (value === false || value === 0) return 0;
+  return null;
 }
 
 function isValidCashMethod(method: unknown, currency: string): boolean {
@@ -4284,14 +4424,113 @@ apiRouter.patch('/settings', requireAuth, requireRole(['owner']), (req: Request,
   res.json({ message: 'Settings saved successfully' });
 });
 
+const DEFAULT_CENTER_SETTINGS: Record<string, string> = {
+  center_name: 'Freedive Dahab',
+  address: 'Dahab, South Sinai, Egypt',
+  phone: '+20 100 234 5678',
+  whatsapp: '+20 100 234 5678',
+  email: 'info@freedivedahab.com',
+  currency_default: 'EUR',
+  timezone: 'Africa/Cairo',
+  notify_deposit_reminders: 'true',
+  notify_low_stock_alerts: 'true',
+  notify_waiver_expiring: 'true',
+  notify_daily_summary_email: 'false',
+};
+
+function isValidTimezone(value: unknown): value is string {
+  if (typeof value !== 'string' || !value.trim() || value.length > 64) return false;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: value.trim() });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const centerSettingValidators: Record<string, (value: unknown) => boolean> = {
+  center_name: (value) => typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 120,
+  address: (value) => typeof value === 'string' && value.trim().length <= 200,
+  phone: (value) => typeof value === 'string' && value.trim().length <= 40,
+  whatsapp: (value) => typeof value === 'string' && value.trim().length <= 40,
+  email: (value) => typeof value === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim()) && value.trim().length <= 120,
+  currency_default: (value) => typeof value === 'string' && financeCurrencies.includes(value as typeof financeCurrencies[number]),
+  timezone: isValidTimezone,
+  notify_deposit_reminders: (value) => typeof value === 'boolean',
+  notify_low_stock_alerts: (value) => typeof value === 'boolean',
+  notify_waiver_expiring: (value) => typeof value === 'boolean',
+  notify_daily_summary_email: (value) => typeof value === 'boolean',
+};
+
+apiRouter.get('/settings/center', requireAuth, (_req: Request, res: Response): void => {
+  const rows = db.prepare('SELECT key, value, updated_at FROM center_settings').all() as any[];
+  const centerSettings: Record<string, string> = { ...DEFAULT_CENTER_SETTINGS };
+  const updatedAtByKey: Record<string, string> = {};
+  for (const row of rows) {
+    if (Object.prototype.hasOwnProperty.call(centerSettingValidators, row.key)) {
+      centerSettings[row.key] = row.value;
+    }
+    updatedAtByKey[row.key] = row.updated_at;
+  }
+  res.json({ settings: centerSettings, updated_at: updatedAtByKey });
+});
+
+apiRouter.put('/settings/center', requireAuth, requireRole(['owner']), (req: Request, res: Response): void => {
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body) || !body.settings || typeof body.settings !== 'object' || Array.isArray(body.settings)) {
+    res.status(400).json({ error: 'A settings object is required' });
+    return;
+  }
+
+  const incoming = body.settings as Record<string, unknown>;
+  const entries = Object.entries(incoming);
+  if (entries.length === 0) {
+    res.status(400).json({ error: 'At least one center setting is required' });
+    return;
+  }
+
+  for (const [key, value] of entries) {
+    const validate = centerSettingValidators[key];
+    if (!validate) {
+      res.status(400).json({ error: `Unknown center setting '${key}'` });
+      return;
+    }
+    if (!validate(value)) {
+      res.status(400).json({ error: `Invalid value for center setting '${key}'` });
+      return;
+    }
+  }
+
+  const now = new Date().toISOString();
+  const upsert = db.prepare(`
+    INSERT INTO center_settings (key, value, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  `);
+  for (const [key, value] of entries) {
+    upsert.run(key, typeof value === 'boolean' ? String(value) : String(value).trim(), now);
+  }
+
+  logAudit({
+    userId: req.user!.id,
+    userEmail: req.user!.email,
+    userRole: req.user!.role,
+    action: 'UPDATE_CENTER_SETTINGS',
+    entityType: 'SETTINGS',
+    details: { changedKeys: entries.map(([key]) => key) },
+    ip: req.ip,
+  });
+
+  res.json({ message: 'Center settings saved successfully', updatedAt: now });
+});
+
 // Full database backup export in JSON format
-apiRouter.get('/backup/export', requireAuth, requireRole(['owner']), (req: Request, res: Response): void => {
+const handleBackupExport = (req: Request, res: Response): void => {
   const tables = [
     'users', 'students', 'inquiries', 'courses', 'pos_catalog_items', 'course_sessions', 'bookings',
     'daily_activities', 'activity_participants', 'invoices', 'invoice_items', 'customer_requests',
     'payments', 'payment_allocations', 'payment_adjustments', 'payment_adjustment_allocations',
     'expenses', 'finance_account_movements', 'payroll_periods', 'payroll_records', 'equipment',
-    'equipment_checkouts', 'settings', 'audit_logs'
+    'equipment_checkouts', 'settings', 'center_settings', 'audit_logs'
   ];
 
   const backupData: Record<string, any[]> = {};
@@ -4327,4 +4566,7 @@ apiRouter.get('/backup/export', requireAuth, requireRole(['owner']), (req: Reque
     exportedBy: req.user!.email,
     data: backupData,
   });
-});
+};
+
+apiRouter.get('/backup', requireAuth, requireRole(['owner']), handleBackupExport);
+apiRouter.get('/backup/export', requireAuth, requireRole(['owner']), handleBackupExport);

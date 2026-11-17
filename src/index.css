@@ -1,42 +1,10 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
 
-@font-face {
-  font-family: "Lato";
-  src: url("/fonts/Lato-Regular.ttf") format("truetype");
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Lato";
-  src: url("/fonts/Lato-Bold.ttf") format("truetype");
-  font-style: normal;
-  font-weight: 700 900;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Oswald";
-  src: url("/fonts/Oswald-Variable.ttf") format("truetype");
-  font-style: normal;
-  font-weight: 200 700;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Roboto";
-  src: url("/fonts/Roboto-Variable.ttf") format("truetype");
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-}
-
 @theme inline {
-  --font-sans: "Lato", system-ui, -apple-system, sans-serif;
-  --font-display: "Oswald", "Lato", system-ui, sans-serif;
-  --font-data: "Roboto", "Lato", system-ui, sans-serif;
+  --font-sans: "Manrope", system-ui, -apple-system, sans-serif;
+  --font-display: "Manrope", system-ui, -apple-system, sans-serif;
+  --font-data: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
   --color-background: var(--metric-chart-background);
   --color-foreground: var(--metric-chart-foreground);
   --color-card: var(--metric-chart-card);
@@ -60,7 +28,7 @@
 
 @layer base {
   :root {
-    font-family: 'Lato', system-ui, -apple-system, sans-serif;
+    font-family: 'Manrope', system-ui, -apple-system, sans-serif;
     --ref-primary: #4C8BF5;
     --ref-primary-hover: #3B7BE8;
     --ref-navy: #28334E;
@@ -88,7 +56,7 @@
   }
 
   [dir="rtl"] {
-    font-family: 'Cairo', 'Lato', system-ui, -apple-system, sans-serif;
+    font-family: 'Cairo', 'Manrope', system-ui, -apple-system, sans-serif;
   }
 }
 
@@ -116,9 +84,9 @@
   color: var(--metric-chart-foreground);
 }
 
-/* Lato keeps dense operational screens readable; Oswald is reserved for headings. */
+/* Manrope is the primary UI and KPI heading font. */
 body {
-  font-family: 'Lato', system-ui, -apple-system, sans-serif;
+  font-family: 'Manrope', system-ui, -apple-system, sans-serif;
   background-color: #F4F6FA;
   color: #28334E;
   -webkit-font-smoothing: antialiased;
@@ -127,12 +95,13 @@ body {
 
 h1,
 h2 {
-  font-family: 'Oswald', 'Lato', system-ui, sans-serif;
-  font-weight: 600;
+  font-family: 'Manrope', system-ui, sans-serif;
+  font-weight: 800;
 }
 
 .font-data {
-  font-family: 'Roboto', 'Lato', system-ui, sans-serif;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  font-variant-numeric: tabular-nums;
 }
 
 .dark body {

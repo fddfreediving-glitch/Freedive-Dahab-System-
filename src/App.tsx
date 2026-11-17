@@ -65,6 +65,7 @@ export default function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const demoLoginEnabled = import.meta.env.VITE_ALLOW_DEMO_LOGIN === 'true';
 
   // Core ERP State
   const [students, setStudents] = useState<Student[]>([]);
@@ -86,9 +87,10 @@ export default function App() {
   const [posCatalogError, setPosCatalogError] = useState<string | null>(null);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
 
-  // Login form state
-  const [loginEmail, setLoginEmail] = useState('owner@freedivedahab.com');
-  const [loginPassword, setLoginPassword] = useState('DahabOwner2026!');
+  // Prefilled owner credentials are a local training convenience only; the
+  // production sign-in form must start empty.
+  const [loginEmail, setLoginEmail] = useState(demoLoginEnabled ? 'owner@freedivedahab.com' : '');
+  const [loginPassword, setLoginPassword] = useState(demoLoginEnabled ? 'DahabOwner2026!' : '');
   const [loginError, setLoginError] = useState<string | null>(null);
   const [loginSubmitting, setLoginSubmitting] = useState(false);
 
@@ -210,7 +212,12 @@ export default function App() {
           setCurrentUser(res.user);
         }
       } catch {
-        // Fallback to demo login as Center Owner
+        // Passwordless owner sign-in is a local training convenience, never a
+        // production fallback.
+        if (!demoLoginEnabled) {
+          setLoading(false);
+          return;
+        }
         try {
           const loginRes = await apiRequest<{ token: string; user: User }>('/api/auth/switch-demo', {
             method: 'POST',
@@ -226,7 +233,7 @@ export default function App() {
       }
     }
     checkAuth();
-  }, []);
+  }, [demoLoginEnabled]);
 
   // Reload data whenever user changes
   useEffect(() => {
@@ -293,7 +300,11 @@ export default function App() {
       setApiToken(res.token);
       setCurrentUser(res.user);
     } catch (err: any) {
-      setLoginError(err.message || 'Login failed. Please verify credentials.');
+      if (err instanceof TypeError) {
+        setLoginError('Cannot reach the operations server. Check the connection and try again.');
+      } else {
+        setLoginError(err.message || 'Login failed. Please verify credentials.');
+      }
     } finally {
       setLoginSubmitting(false);
     }
@@ -337,17 +348,15 @@ export default function App() {
       <div className="min-h-screen bg-[#F4F6FA] dark:bg-[#0F172A] flex items-center justify-center p-4">
         <div className="w-full max-w-md bg-white dark:bg-[#1E293B] border border-[#E8EEF7] dark:border-slate-800 rounded-2xl shadow-xl p-8 space-y-6">
           <div className="text-center space-y-2">
-            <BrandMark className="mx-auto h-14 w-14 rounded-2xl" />
-            <h1 className="text-2xl font-black tracking-tight text-[#28334E] dark:text-white">
-              Freedive Dahab
-            </h1>
+            <BrandMark className="mx-auto h-28 max-w-[240px]" />
+            <h1 className="sr-only">Freedive Dahab</h1>
             <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
               Internal Business Operations & CRM System
             </p>
           </div>
 
           {loginError && (
-            <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/80 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs flex items-center gap-2">
+            <div role="alert" className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/80 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
               <span>{loginError}</span>
             </div>
@@ -385,6 +394,7 @@ export default function App() {
           </form>
 
           {/* Quick Demo Sign-in Helper */}
+          {demoLoginEnabled && (
           <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-2">
             <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider text-center">
               Quick Role Test
@@ -420,6 +430,7 @@ export default function App() {
               </button>
             </div>
           </div>
+          )}
         </div>
       </div>
     );
@@ -474,6 +485,7 @@ export default function App() {
         <ReferenceNavbar
           currentUser={currentUser}
           onRoleSwitch={handleRoleSwitch}
+          demoEnabled={demoLoginEnabled}
           lang={lang}
           onLanguageChange={setLang}
           onLogout={handleLogout}
@@ -523,6 +535,12 @@ export default function App() {
                   await apiRequest(`/api/students/${id}`, {
                     method: 'PATCH',
                     body: JSON.stringify({ medical_clearance_status: status }),
+                  });
+                }}
+                onUpdateStay={async (id, details) => {
+                  await apiRequest(`/api/students/${id}`, {
+                    method: 'PATCH',
+                    body: JSON.stringify(details),
                   });
                 }}
                 onCreateInquiry={async (data) => {

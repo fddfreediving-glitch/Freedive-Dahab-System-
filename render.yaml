@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: freedive-dahab-erp
+    runtime: node
+    plan: starter
+    region: frankfurt
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ALLOW_DEMO_LOGIN
+        value: "false"
+      - key: VITE_ALLOW_DEMO_LOGIN
+        value: "false"
+      - key: DATA_DIR
+        value: /var/data
+    disk:
+      name: freedive-dahab-data
+      mountPath: /var/data
+      sizeGB: 1
